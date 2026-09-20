@@ -1,257 +1,345 @@
 import os
-import re
 import asyncio
 import logging
-from typing import Any, Dict, Optional, List
-
+import re
+from typing import Any, Dict, List
 
 import aiohttp
 
 
 logger = logging.getLogger(__name__)
 
+ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "").strip()
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY")
+ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
 # ============================================================
-# EVM CHAIN REGISTRY
-# ============================================================
-#
-# Web3 Oasis uses standard EVM JSON-RPC.
-#
-# The important part is that users do NOT need to specify
-# the chain when analyzing a contract.
-#
-# The bot can probe supported EVM networks and determine
-# where the contract exists.
-#
+# SUPPORTED EVM NETWORKS
 # ============================================================
 
-EVM_CHAINS = {
+EVM_CHAINS: Dict[str, Dict[str, Any]] = {
 
+    # --------------------------------------------------------
+    # Ethereum
+    # --------------------------------------------------------
     "ethereum": {
         "name": "Ethereum",
         "chain_id": 1,
-        "rpc": "https://eth-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://eth-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://ethereum-rpc.publicnode.com",
     },
 
+    # --------------------------------------------------------
+    # Base
+    # --------------------------------------------------------
     "base": {
         "name": "Base",
         "chain_id": 8453,
-        "rpc": "https://base-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://base-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://base-rpc.publicnode.com",
     },
 
+    # --------------------------------------------------------
+    # Arbitrum
+    # --------------------------------------------------------
     "arbitrum": {
         "name": "Arbitrum One",
         "chain_id": 42161,
-        "rpc": "https://arb-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://arb-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://arbitrum-one-rpc.publicnode.com",
     },
 
+    # --------------------------------------------------------
+    # Optimism
+    # --------------------------------------------------------
     "optimism": {
         "name": "OP Mainnet",
         "chain_id": 10,
-        "rpc": "https://opt-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://opt-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://optimism-rpc.publicnode.com",
     },
 
+    # --------------------------------------------------------
+    # Polygon
+    # --------------------------------------------------------
     "polygon": {
         "name": "Polygon",
         "chain_id": 137,
-        "rpc": "https://polygon-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "POL",
+        "native": "POL",
+        "alchemy": "https://polygon-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://polygon-bor-rpc.publicnode.com",
     },
 
+    # --------------------------------------------------------
+    # BNB Smart Chain
+    # --------------------------------------------------------
     "bnb": {
         "name": "BNB Smart Chain",
         "chain_id": 56,
-        "rpc": "https://bnb-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "BNB",
+        "native": "BNB",
+        "alchemy": "https://bnb-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://bsc-rpc.publicnode.com",
     },
 
+    # --------------------------------------------------------
+    # Avalanche
+    # --------------------------------------------------------
     "avalanche": {
-        "name": "Avalanche",
+        "name": "Avalanche C-Chain",
         "chain_id": 43114,
-        "rpc": "https://avax-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "AVAX",
+        "native": "AVAX",
+        "alchemy": "https://avax-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://avalanche-c-chain-rpc.publicnode.com",
     },
 
+    # --------------------------------------------------------
+    # Linea
+    # --------------------------------------------------------
     "linea": {
         "name": "Linea",
         "chain_id": 59144,
-        "rpc": "https://linea-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://linea-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://linea-rpc.publicnode.com",
     },
 
+    # --------------------------------------------------------
+    # zkSync
+    # --------------------------------------------------------
     "zksync": {
         "name": "zkSync Era",
         "chain_id": 324,
-        "rpc": "https://zksync-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://zksync-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://mainnet.era.zksync.io",
     },
 
+    # --------------------------------------------------------
+    # Scroll
+    # --------------------------------------------------------
     "scroll": {
         "name": "Scroll",
         "chain_id": 534352,
-        "rpc": "https://scroll-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://scroll-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.scroll.io",
     },
 
+    # --------------------------------------------------------
+    # Mantle
+    # --------------------------------------------------------
     "mantle": {
         "name": "Mantle",
         "chain_id": 5000,
-        "rpc": "https://mantle-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "MNT",
+        "native": "MNT",
+        "alchemy": "https://mantle-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.mantle.xyz",
     },
 
+    # --------------------------------------------------------
+    # Blast
+    # --------------------------------------------------------
     "blast": {
         "name": "Blast",
         "chain_id": 81457,
-        "rpc": "https://blast-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://blast-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.blast.io",
     },
 
+    # --------------------------------------------------------
+    # Gnosis
+    # --------------------------------------------------------
     "gnosis": {
         "name": "Gnosis",
         "chain_id": 100,
-        "rpc": "https://gnosis-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "XDAI",
+        "native": "XDAI",
+        "alchemy": "https://gnosis-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.gnosischain.com",
     },
 
+    # --------------------------------------------------------
+    # Celo
+    # --------------------------------------------------------
     "celo": {
         "name": "Celo",
         "chain_id": 42220,
-        "rpc": "https://celo-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "CELO",
+        "native": "CELO",
+        "alchemy": "https://celo-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://forno.celo.org",
     },
 
+    # --------------------------------------------------------
+    # Unichain
+    # --------------------------------------------------------
     "unichain": {
         "name": "Unichain",
         "chain_id": 130,
-        "rpc": "https://unichain-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://unichain-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://mainnet.unichain.org",
     },
 
+    # --------------------------------------------------------
+    # World Chain
+    # --------------------------------------------------------
     "worldchain": {
         "name": "World Chain",
         "chain_id": 480,
-        "rpc": "https://worldchain-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://worldchain-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://worldchain-mainnet.g.alchemy.com/v2/{key}",
     },
 
+    # --------------------------------------------------------
+    # Soneium
+    # --------------------------------------------------------
     "soneium": {
         "name": "Soneium",
         "chain_id": 1868,
-        "rpc": "https://soneium-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://soneium-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.soneium.org",
     },
 
+    # --------------------------------------------------------
+    # Shape
+    # --------------------------------------------------------
     "shape": {
         "name": "Shape",
         "chain_id": 360,
-        "rpc": "https://shape-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://shape-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://mainnet.shape.network",
     },
 
+    # --------------------------------------------------------
+    # Sonic
+    # --------------------------------------------------------
     "sonic": {
         "name": "Sonic",
         "chain_id": 146,
-        "rpc": "https://sonic-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "S",
+        "native": "S",
+        "alchemy": "https://sonic-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.soniclabs.com",
     },
 
+    # --------------------------------------------------------
+    # Berachain
+    # --------------------------------------------------------
     "berachain": {
         "name": "Berachain",
         "chain_id": 80094,
-        "rpc": "https://berachain-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "BERA",
+        "native": "BERA",
+        "alchemy": "https://berachain-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.berachain.com",
     },
 
+    # --------------------------------------------------------
+    # Monad
+    # --------------------------------------------------------
     "monad": {
         "name": "Monad",
         "chain_id": 143,
-        "rpc": "https://monad-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "MON",
+        "native": "MON",
+        "alchemy": "https://monad-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.monad.xyz",
     },
 
     # ========================================================
-    # REQUIRED NETWORKS
+    # THE FOUR CHAINS YOU SPECIFICALLY REQUESTED
     # ========================================================
 
+    # --------------------------------------------------------
+    # Robinhood Chain
+    # --------------------------------------------------------
     "robinhood": {
         "name": "Robinhood Chain",
         "chain_id": 4663,
-        "rpc": "https://robinhood-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://robinhood-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.mainnet.chain.robinhood.com",
     },
 
+    # --------------------------------------------------------
+    # Arc
+    # --------------------------------------------------------
     "arc": {
         "name": "Arc",
         "chain_id": 5042,
-        "rpc": "https://arc-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "USDC",
+        "native": "USDC",
+        "alchemy": "https://arc-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc.arc.network",
     },
 
+    # --------------------------------------------------------
+    # Ink
+    # --------------------------------------------------------
     "ink": {
         "name": "Ink",
         "chain_id": 57073,
-        "rpc": "https://ink-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://ink-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://rpc-gel.inkonchain.com",
     },
 
+    # --------------------------------------------------------
+    # Abstract
+    # --------------------------------------------------------
     "abstract": {
         "name": "Abstract",
         "chain_id": 2741,
-        "rpc": "https://abstract-mainnet.g.alchemy.com/v2/{api_key}",
-        "native_symbol": "ETH",
+        "native": "ETH",
+        "alchemy": "https://abstract-mainnet.g.alchemy.com/v2/{key}",
+        "fallback": "https://api.mainnet.abs.xyz",
     },
 }
 
 
 # ============================================================
-# ADDRESS VALIDATION
+# RPC HELPERS
 # ============================================================
 
-ADDRESS_PATTERN = re.compile(
-    r"^0x[a-fA-F0-9]{40}$"
-)
+def build_rpc_url(chain: Dict[str, Any]) -> str:
+    """
+    Prefer Alchemy when an API key is configured.
+    Otherwise use the chain's public fallback RPC.
+    """
 
+    if ALCHEMY_API_KEY and chain.get("alchemy"):
+        return chain["alchemy"].format(key=ALCHEMY_API_KEY)
 
-def is_valid_address(address: str) -> bool:
-    return bool(
-        ADDRESS_PATTERN.match(address)
-    )
+    return chain["fallback"]
 
-
-# ============================================================
-# RPC REQUEST
-# ============================================================
 
 async def rpc_call(
     session: aiohttp.ClientSession,
-    chain: str,
+    chain: Dict[str, Any],
     method: str,
-    params: list,
-) -> Optional[Any]:
+    params: List[Any],
+) -> Any:
+    """
+    Make a JSON-RPC call.
 
-    if not ALCHEMY_API_KEY:
-        return None
+    If Alchemy is configured and its endpoint fails, automatically
+    retry the request against the chain's fallback RPC.
+    """
 
-    config = EVM_CHAINS.get(chain)
+    urls = []
 
-    if not config:
-        return None
+    primary = build_rpc_url(chain)
+    fallback = chain.get("fallback")
 
-    rpc_url = config["rpc"].format(
-        api_key=ALCHEMY_API_KEY
-    )
+    if primary:
+        urls.append(primary)
+
+    if fallback and fallback not in urls:
+        urls.append(fallback)
 
     payload = {
         "jsonrpc": "2.0",
@@ -260,32 +348,41 @@ async def rpc_call(
         "params": params,
     }
 
-    try:
+    last_error = None
 
-        async with session.post(
-            rpc_url,
-            json=payload,
-        ) as response:
+    for url in urls:
+        try:
+            timeout = aiohttp.ClientTimeout(total=12)
 
-            if response.status != 200:
-                return None
+            async with session.post(
+                url,
+                json=payload,
+                timeout=timeout,
+            ) as response:
 
-            data = await response.json()
+                if response.status != 200:
+                    last_error = f"HTTP {response.status}"
+                    continue
 
-            if "error" in data:
-                return None
+                data = await response.json(content_type=None)
 
-            return data.get("result")
+                if "error" in data:
+                    last_error = str(data["error"])
+                    continue
 
-    except Exception as exc:
+                return data.get("result")
 
-        logger.debug(
-            "RPC error on %s: %s",
-            chain,
-            exc,
-        )
+        except Exception as exc:
+            last_error = str(exc)
+            continue
 
-        return None
+    logger.debug(
+        "RPC failed for %s: %s",
+        chain.get("name"),
+        last_error,
+    )
+
+    return None
 
 
 # ============================================================
@@ -294,52 +391,46 @@ async def rpc_call(
 
 async def check_contract_on_chain(
     session: aiohttp.ClientSession,
-    chain: str,
+    chain_key: str,
+    chain: Dict[str, Any],
     address: str,
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any] | None:
 
-    result = await rpc_call(
+    code = await rpc_call(
         session,
         chain,
         "eth_getCode",
-        [
-            address,
-            "latest",
-        ],
+        [address, "latest"],
     )
 
-    if result is None:
+    if not code:
         return None
 
-    # An EVM address with no deployed contract returns 0x.
-    if result == "0x":
+    if code in ("0x", "0x0"):
         return None
-
-    config = EVM_CHAINS[chain]
 
     return {
-        "key": chain,
-        "name": config["name"],
-        "chain_id": config["chain_id"],
-        "native_symbol": config["native_symbol"],
+        "chain_key": chain_key,
+        "chain": chain["name"],
+        "chain_id": chain["chain_id"],
+        "native": chain["native"],
+        "contract": address,
     }
 
 
-async def discover_chains(
-    address: str,
-) -> List[Dict[str, Any]]:
+async def discover_chains(address: str) -> List[Dict[str, Any]]:
+    """
+    Probe every supported network concurrently.
 
-    if not ALCHEMY_API_KEY:
-        raise RuntimeError(
-            "ALCHEMY_API_KEY is not configured."
-        )
+    A contract is considered deployed on a network when
+    eth_getCode returns bytecode.
+    """
 
-    timeout = aiohttp.ClientTimeout(
-        total=30
-    )
+    timeout = aiohttp.ClientTimeout(total=15)
 
     connector = aiohttp.TCPConnector(
-        limit=20
+        limit=20,
+        ttl_dns_cache=300,
     )
 
     async with aiohttp.ClientSession(
@@ -350,10 +441,11 @@ async def discover_chains(
         tasks = [
             check_contract_on_chain(
                 session,
+                chain_key,
                 chain,
                 address,
             )
-            for chain in EVM_CHAINS
+            for chain_key, chain in EVM_CHAINS.items()
         ]
 
         results = await asyncio.gather(
@@ -364,98 +456,65 @@ async def discover_chains(
     found = []
 
     for result in results:
-
-        if isinstance(
-            result,
-            dict,
-        ):
+        if isinstance(result, dict):
             found.append(result)
 
     return found
 
 
 # ============================================================
-# NATIVE BALANCE
+# BASIC ON-CHAIN DATA
 # ============================================================
 
 async def get_native_balance(
     session: aiohttp.ClientSession,
-    chain: str,
+    chain: Dict[str, Any],
     address: str,
-) -> Optional[float]:
+) -> str:
 
     result = await rpc_call(
         session,
         chain,
         "eth_getBalance",
-        [
-            address,
-            "latest",
-        ],
+        [address, "latest"],
     )
 
     if result is None:
-        return None
+        return "Unavailable"
 
     try:
+        value = int(result, 16) / 10**18
+        return f"{value:.6f} {chain['native']}"
+    except Exception:
+        return "Unavailable"
 
-        return int(
-            result,
-            16,
-        ) / 10**18
-
-    except (
-        ValueError,
-        TypeError,
-    ):
-        return None
-
-
-# ============================================================
-# TRANSACTION COUNT
-# ============================================================
 
 async def get_transaction_count(
     session: aiohttp.ClientSession,
-    chain: str,
+    chain: Dict[str, Any],
     address: str,
-) -> Optional[int]:
+) -> int | None:
 
     result = await rpc_call(
         session,
         chain,
         "eth_getTransactionCount",
-        [
-            address,
-            "latest",
-        ],
+        [address, "latest"],
     )
 
     if result is None:
         return None
 
     try:
-
-        return int(
-            result,
-            16,
-        )
-
-    except (
-        ValueError,
-        TypeError,
-    ):
+        return int(result, 16)
+    except Exception:
         return None
 
 
-# ============================================================
-# LATEST BLOCK
-# ============================================================
-
 async def get_latest_block(
     session: aiohttp.ClientSession,
-    chain: str,
-) -> Optional[int]:
+    chain: Dict[str, Any],
+) -> int | None:
 
     result = await rpc_call(
         session,
@@ -468,16 +527,8 @@ async def get_latest_block(
         return None
 
     try:
-
-        return int(
-            result,
-            16,
-        )
-
-    except (
-        ValueError,
-        TypeError,
-    ):
+        return int(result, 16)
+    except Exception:
         return None
 
 
@@ -485,505 +536,231 @@ async def get_latest_block(
 # DEXSCREENER
 # ============================================================
 
-DEXSCREENER_TOKEN_URL = (
-    "https://api.dexscreener.com/latest/dex/tokens/"
-)
-
-
 async def get_market_data(
     session: aiohttp.ClientSession,
-    address: str,
-    chain: Optional[str] = None,
-) -> Dict[str, Any]:
+    token_address: str,
+    chain_key: str,
+) -> List[Dict[str, Any]]:
 
     url = (
-        f"{DEXSCREENER_TOKEN_URL}"
-        f"{address}"
+        "https://api.dexscreener.com/latest/dex/tokens/"
+        f"{token_address}"
     )
 
     try:
-
         async with session.get(
-            url
+            url,
+            timeout=aiohttp.ClientTimeout(total=12),
         ) as response:
 
             if response.status != 200:
-
-                return {
-                    "success": False,
-                    "error": (
-                        f"DexScreener HTTP "
-                        f"{response.status}"
-                    ),
-                }
+                return []
 
             data = await response.json()
 
-            pairs = (
-                data.get("pairs")
-                or []
-            )
+    except Exception:
+        return []
 
-            if chain:
+    pairs = data.get("pairs") or []
 
-                # DexScreener uses its own chain IDs.
-                # Most common EVM identifiers match our
-                # registry names.
+    # DexScreener uses chain identifiers.
+    # Filter when possible, but don't discard everything if the
+    # provider uses a naming variation for a supported network.
 
-                pairs = [
-                    pair
-                    for pair in pairs
-                    if pair.get(
-                        "chainId"
-                    ) == chain
-                ]
+    matching = [
+        pair
+        for pair in pairs
+        if str(pair.get("chainId", "")).lower()
+        == chain_key.lower()
+    ]
 
-            formatted = []
-
-            for pair in pairs:
-
-                liquidity = (
-                    pair.get(
-                        "liquidity"
-                    )
-                    or {}
-                )
-
-                formatted.append(
-                    {
-                        "chain": pair.get(
-                            "chainId"
-                        ),
-                        "dex": pair.get(
-                            "dexId"
-                        ),
-                        "pair": pair.get(
-                            "pairAddress"
-                        ),
-                        "url": pair.get(
-                            "url"
-                        ),
-                        "price_usd": pair.get(
-                            "priceUsd"
-                        ),
-                        "market_cap": pair.get(
-                            "marketCap"
-                        ),
-                        "fdv": pair.get(
-                            "fdv"
-                        ),
-                        "liquidity_usd": (
-                            liquidity.get(
-                                "usd"
-                            )
-                        ),
-                        "volume_24h": (
-                            pair.get(
-                                "volume"
-                            )
-                            or {}
-                        ).get(
-                            "h24"
-                        ),
-                        "price_change_24h": (
-                            pair.get(
-                                "priceChange"
-                            )
-                            or {}
-                        ).get(
-                            "h24"
-                        ),
-                        "base_token": (
-                            pair.get(
-                                "baseToken"
-                            )
-                            or {}
-                        ).get(
-                            "symbol"
-                        ),
-                        "quote_token": (
-                            pair.get(
-                                "quoteToken"
-                            )
-                            or {}
-                        ).get(
-                            "symbol"
-                        ),
-                    }
-                )
-
-            return {
-                "success": True,
-                "found": bool(formatted),
-                "pairs": formatted,
-            }
-
-    except Exception as exc:
-
-        logger.exception(
-            "DexScreener request failed: %s",
-            exc,
-        )
-
-        return {
-            "success": False,
-            "error": str(exc),
-        }
+    return matching[:3] if matching else pairs[:3]
 
 
 # ============================================================
 # TOKEN ANALYSIS
 # ============================================================
 
-async def analyze_token(
-    token_address: str,
-) -> Dict[str, Any]:
+async def analyze_token(token_address: str) -> Dict[str, Any]:
 
-    token_address = (
-        token_address.strip()
-    )
+    token_address = token_address.strip()
 
-    if not is_valid_address(
-        token_address
-    ):
+    if not ADDRESS_RE.fullmatch(token_address):
+        return {
+            "success": False,
+            "error": "Invalid EVM address.",
+        }
 
+    found = await discover_chains(token_address)
+
+    if not found:
         return {
             "success": False,
             "error": (
-                "That doesn't look like "
-                "a valid EVM address."
+                "I couldn't find a deployed contract at that "
+                "address on the supported EVM networks."
             ),
         }
 
-    # --------------------------------------------------------
-    # STEP 1 — FIND THE CONTRACT
-    # --------------------------------------------------------
-
-    chains = await discover_chains(
-        token_address
-    )
-
-    if not chains:
-
-        return {
-            "success": False,
-            "error": (
-                "I couldn't find a deployed contract "
-                "at that address on the supported EVM "
-                "networks."
-            ),
-        }
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    #
-    # If a contract exists on multiple networks, don't
-    # silently choose one.
-    # --------------------------------------------------------
-
-    if len(chains) > 1:
-
+    # Same address can legitimately exist on multiple EVM chains.
+    if len(found) > 1:
         return {
             "success": False,
             "multiple_chains": True,
-            "address": token_address,
-            "chains": chains,
-            "error": (
-                "This contract address exists on "
-                "multiple supported EVM chains."
-            ),
+            "matches": found,
         }
 
-    # --------------------------------------------------------
-    # STEP 2 — ANALYZE THE DISCOVERED CHAIN
-    # --------------------------------------------------------
+    detected = found[0]
 
-    detected = chains[0]
+    chain_key = detected["chain_key"]
+    chain = EVM_CHAINS[chain_key]
 
-    chain = detected["key"]
-
-    timeout = aiohttp.ClientTimeout(
-        total=30
-    )
+    timeout = aiohttp.ClientTimeout(total=15)
 
     async with aiohttp.ClientSession(
         timeout=timeout
     ) as session:
 
-        balance = await get_native_balance(
-            session,
-            chain,
-            token_address,
-        )
-
-        tx_count = await get_transaction_count(
-            session,
-            chain,
-            token_address,
-        )
-
-        latest_block = await get_latest_block(
-            session,
-            chain,
-        )
-
-        market = await get_market_data(
-            session,
-            token_address,
-            chain,
+        balance, tx_count, latest_block, markets = (
+            await asyncio.gather(
+                get_native_balance(
+                    session,
+                    chain,
+                    token_address,
+                ),
+                get_transaction_count(
+                    session,
+                    chain,
+                    token_address,
+                ),
+                get_latest_block(
+                    session,
+                    chain,
+                ),
+                get_market_data(
+                    session,
+                    token_address,
+                    chain_key,
+                ),
+            )
         )
 
     return {
-
         "success": True,
-
-        "address": token_address,
-
-        "chain": detected,
-
+        "chain_key": chain_key,
+        "chain": detected["chain"],
+        "chain_id": detected["chain_id"],
+        "native": detected["native"],
+        "contract": token_address,
         "native_balance": balance,
-
         "transaction_count": tx_count,
-
         "latest_block": latest_block,
-
-        "market": market,
+        "markets": markets,
     }
 
 
 # ============================================================
-# FORMAT ANALYSIS
+# RESPONSE FORMATTER
 # ============================================================
 
-def format_analysis(
-    data: Dict[str, Any],
-) -> str:
+def format_analysis(result: Dict[str, Any]) -> str:
 
-    if data.get(
-        "multiple_chains"
-    ):
+    if not result.get("success"):
 
-        lines = [
-            "⚠️ MULTIPLE CHAIN DEPLOYMENTS",
-            "",
-            "This contract address exists on "
-            "more than one supported EVM network.",
-            "",
-            "📍 Contract:",
-            f"`{data.get('address')}`",
-            "",
-            "⛓️ Found on:",
-        ]
+        if result.get("multiple_chains"):
+            matches = result.get("matches", [])
 
-        for chain in data.get(
-            "chains",
-            [],
-        ):
-
-            lines.append(
-                f"• {chain['name']} "
-                f"(Chain ID {chain['chain_id']})"
-            )
-
-        lines.extend(
-            [
+            lines = [
+                "⚠️ This contract exists on multiple supported EVM networks.",
                 "",
-                "Please specify the chain if you "
-                "want a specific deployment analyzed."
+                "Detected networks:",
             ]
-        )
 
-        return "\n".join(
-            lines
-        )
+            for match in matches:
+                lines.append(
+                    f"• {match['chain']} "
+                    f"(Chain ID: {match['chain_id']})"
+                )
 
-    if not data.get(
-        "success"
-    ):
+            lines.extend([
+                "",
+                "The same EVM address can exist on multiple chains, "
+                "so I won't silently guess the network."
+            ])
+
+            return "\n".join(lines)
 
         return (
             "❌ Analysis failed.\n\n"
-            f"{data.get('error', 'Unknown error')}"
+            f"{result.get('error', 'Unknown error.')}"
         )
-
-    address = data.get(
-        "address"
-    )
-
-    chain = data.get(
-        "chain",
-        {},
-    )
-
-    chain_name = chain.get(
-        "name",
-        "Unknown",
-    )
-
-    chain_id = chain.get(
-        "chain_id",
-        "Unknown",
-    )
-
-    native_symbol = chain.get(
-        "native_symbol",
-        "ETH",
-    )
-
-    balance = data.get(
-        "native_balance"
-    )
-
-    tx_count = data.get(
-        "transaction_count"
-    )
-
-    latest_block = data.get(
-        "latest_block"
-    )
-
-    market = data.get(
-        "market",
-        {},
-    )
 
     lines = [
-
-        "🔎 TOKEN INTELLIGENCE",
-
+        "🤖 Web3 Oasis — Token Analysis",
         "",
-
-        f"⛓️ Chain: {chain_name}",
-
-        f"🆔 Chain ID: {chain_id}",
-
+        f"⛓️ Chain: {result['chain']}",
+        f"🆔 Chain ID: {result['chain_id']}",
+        f"📜 Contract: {result['contract']}",
         "",
-
-        "📍 Contract:",
-
-        f"`{address}`",
-
-        "",
+        f"💰 Native Balance: {result['native_balance']}",
     ]
 
-    if balance is not None:
-
-        lines.append(
-            f"💰 Contract balance: "
-            f"{balance:.6f} {native_symbol}"
-        )
-
-    else:
-
-        lines.append(
-            "💰 Contract balance: unavailable"
-        )
+    tx_count = result.get("transaction_count")
 
     if tx_count is not None:
-
         lines.append(
-            f"🧾 Transaction count: {tx_count}"
+            f"🔢 Transaction Count: {tx_count}"
         )
 
-    else:
-
-        lines.append(
-            "🧾 Transaction count: unavailable"
-        )
+    latest_block = result.get("latest_block")
 
     if latest_block is not None:
-
         lines.append(
-            f"🧱 Latest block: {latest_block}"
+            f"🧱 Latest Block: {latest_block}"
         )
 
-    lines.append("")
+    markets = result.get("markets") or []
 
-    if market.get(
-        "success"
-    ):
+    if markets:
+        lines.extend([
+            "",
+            "📊 Market Data",
+        ])
 
-        if market.get(
-            "found"
-        ):
+        for pair in markets:
+            base = pair.get("baseToken") or {}
+            quote = pair.get("quoteToken") or {}
 
-            pairs = market.get(
-                "pairs",
-                [],
+            pair_name = (
+                f"{base.get('symbol', '?')}/"
+                f"{quote.get('symbol', '?')}"
             )
 
-            lines.append(
-                f"📊 Market pairs: {len(pairs)}"
-            )
+            price = pair.get("priceUsd")
+            liquidity = (pair.get("liquidity") or {}).get("usd")
+            volume = (pair.get("volume") or {}).get("h24")
 
-            for pair in pairs[:3]:
+            lines.append(f"• Pair: {pair_name}")
 
-                symbol = (
-                    pair.get(
-                        "base_token"
-                    )
-                    or "Unknown"
+            if price:
+                lines.append(
+                    f"  Price: ${price}"
                 )
 
-                dex = (
-                    pair.get(
-                        "dex"
-                    )
-                    or "Unknown"
+            if liquidity is not None:
+                lines.append(
+                    f"  Liquidity: ${liquidity:,.2f}"
                 )
 
-                price = pair.get(
-                    "price_usd"
+            if volume is not None:
+                lines.append(
+                    f"  24h Volume: ${volume:,.2f}"
                 )
-
-                liquidity = pair.get(
-                    "liquidity_usd"
-                )
-
-                volume = pair.get(
-                    "volume_24h"
-                )
-
-                lines.extend(
-                    [
-                        "",
-                        f"🔹 {symbol} / {dex}",
-                        (
-                            f"Price: "
-                            f"${price or 'N/A'}"
-                        ),
-                        (
-                            "Liquidity: $"
-                            f"{liquidity or 'N/A'}"
-                        ),
-                        (
-                            "24h Volume: $"
-                            f"{volume or 'N/A'}"
-                        ),
-                    ]
-                )
-
-        else:
-
-            lines.append(
-                "📊 Market data: "
-                "No matching market pairs found."
-            )
 
     else:
-
-        lines.append(
-            "📊 Market data unavailable."
-        )
-
-    lines.extend(
-        [
+        lines.extend([
             "",
-            "⚠️ Intelligence data only — "
-            "not financial advice.",
-        ]
-    )
+            "📊 Market Data: No DexScreener pair found."
+        ])
 
-    return "\n".join(
-        lines
-    )
+    return "\n".join(lines)
