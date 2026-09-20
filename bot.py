@@ -1,11 +1,15 @@
 import os
 import logging
+
 from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
 )
+
+from analysis import analyze_token, format_analysis
+
 
 # =========================
 # CONFIGURATION
@@ -15,9 +19,9 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 if not BOT_TOKEN:
     raise RuntimeError(
-        "TELEGRAM_BOT_TOKEN is not set. "
-        "Add it to Railway → Variables."
+        "TELEGRAM_BOT_TOKEN is not set in Railway Variables."
     )
+
 
 # =========================
 # LOGGING
@@ -32,26 +36,26 @@ logger = logging.getLogger(__name__)
 
 
 # =========================
-# COMMANDS
+# /START
 # =========================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start."""
-
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     message = (
         "🤖 *Web3 Oasis*\n\n"
         "Your Web3 intelligence bot is online.\n\n"
-        "I can help analyze crypto tokens and return "
-        "on-chain and market intelligence.\n\n"
-        "*Available commands:*\n"
-        "• /start — Start the bot\n"
-        "• /help — Show available commands\n"
-        "• /analyze — Analyze a token\n"
-        "• /risk — Check token risk\n"
-        "• /holders — Check holder information\n"
-        "• /report — Generate an analysis report\n\n"
-        "More intelligence features will be connected "
-        "to the analysis engine."
+        "I can analyze crypto tokens using "
+        "on-chain and market data.\n\n"
+        "*Commands:*\n"
+        "🔍 /analyze — Analyze a token\n"
+        "⚠️ /risk — Risk analysis\n"
+        "👥 /holders — Holder analysis\n"
+        "📊 /report — Full report\n"
+        "❓ /help — Show help\n\n"
+        "Example:\n"
+        "`/analyze 0xYourTokenAddress`"
     )
 
     await update.message.reply_text(
@@ -60,20 +64,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help."""
+# =========================
+# /HELP
+# =========================
 
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     message = (
         "📚 *Web3 Oasis Help*\n\n"
-        "Use these commands:\n\n"
-        "🔍 /analyze `<token>`\n"
-        "Analyze a token address.\n\n"
-        "⚠️ /risk `<token>`\n"
+        "🔍 `/analyze <token>`\n"
+        "Analyze market and on-chain data.\n\n"
+        "⚠️ `/risk <token>`\n"
         "Check available risk indicators.\n\n"
-        "👥 /holders `<token>`\n"
-        "Inspect holder-related data.\n\n"
-        "📊 /report `<token>`\n"
-        "Generate a fuller intelligence report.\n\n"
+        "👥 `/holders <token>`\n"
+        "Check holder intelligence.\n\n"
+        "📊 `/report <token>`\n"
+        "Generate a broader report.\n\n"
         "Example:\n"
         "`/analyze 0x123...`"
     )
@@ -84,104 +92,164 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /analyze."""
+# =========================
+# /ANALYZE
+# =========================
 
+async def analyze(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     if not context.args:
         await update.message.reply_text(
-            "🔍 Send a token contract address.\n\n"
+            "🔍 Please provide a token contract address.\n\n"
             "Example:\n"
             "`/analyze 0x123...`",
             parse_mode="Markdown",
         )
         return
 
-    token_address = context.args[0]
+    token_address = context.args[0].strip()
 
-    await update.message.reply_text(
-        f"🔎 Analyzing:\n`{token_address}`\n\n"
-        "⏳ Collecting market and on-chain data...",
-        parse_mode="Markdown",
+    status_message = await update.message.reply_text(
+        "🔎 Analyzing token...\n\n"
+        "⛓️ Checking on-chain data\n"
+        "📊 Checking market data\n"
+        "🧠 Processing intelligence..."
     )
 
-    # The actual intelligence engine will be connected
-    # in analysis.py.
-    await update.message.reply_text(
-        "🧠 Analysis engine is being connected.\n\n"
-        "This command will return the full token analysis "
-        "once the intelligence modules are installed."
-    )
+    try:
+        result = await analyze_token(
+            token_address
+        )
+
+        response = format_analysis(
+            result
+        )
+
+        await status_message.edit_text(
+            response,
+            parse_mode="Markdown",
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Analysis failed: %s",
+            exc,
+        )
+
+        await status_message.edit_text(
+            "❌ Something went wrong while analyzing "
+            "this token.\n\n"
+            "Please check the contract address and "
+            "try again."
+        )
 
 
-async def risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /risk."""
+# =========================
+# /RISK
+# =========================
 
+async def risk(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     if not context.args:
         await update.message.reply_text(
-            "⚠️ Send a token contract address.\n\n"
+            "⚠️ Please provide a token contract address.\n\n"
             "Example:\n"
             "`/risk 0x123...`",
             parse_mode="Markdown",
         )
         return
 
-    token_address = context.args[0]
+    token_address = context.args[0].strip()
 
     await update.message.reply_text(
-        f"⚠️ Risk analysis requested for:\n"
-        f"`{token_address}`\n\n"
-        "⏳ Risk engine is being connected...",
+        "⚠️ Risk analysis is being connected to the "
+        "intelligence engine.\n\n"
+        f"Token:\n`{token_address}`",
         parse_mode="Markdown",
     )
 
 
-async def holders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /holders."""
+# =========================
+# /HOLDERS
+# =========================
 
+async def holders(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     if not context.args:
         await update.message.reply_text(
-            "👥 Send a token contract address.\n\n"
+            "👥 Please provide a token contract address.\n\n"
             "Example:\n"
             "`/holders 0x123...`",
             parse_mode="Markdown",
         )
         return
 
-    token_address = context.args[0]
+    token_address = context.args[0].strip()
 
     await update.message.reply_text(
-        f"👥 Holder analysis requested for:\n"
-        f"`{token_address}`\n\n"
-        "⏳ Holder intelligence module is being connected...",
+        "👥 Holder analysis is being connected to the "
+        "intelligence engine.\n\n"
+        f"Token:\n`{token_address}`",
         parse_mode="Markdown",
     )
 
 
-async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /report."""
+# =========================
+# /REPORT
+# =========================
 
+async def report(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     if not context.args:
         await update.message.reply_text(
-            "📊 Send a token contract address.\n\n"
+            "📊 Please provide a token contract address.\n\n"
             "Example:\n"
             "`/report 0x123...`",
             parse_mode="Markdown",
         )
         return
 
-    token_address = context.args[0]
+    token_address = context.args[0].strip()
 
-    await update.message.reply_text(
-        f"📊 Generating intelligence report for:\n"
-        f"`{token_address}`\n\n"
-        "⏳ Gathering data...",
-        parse_mode="Markdown",
+    status_message = await update.message.reply_text(
+        "📊 Generating intelligence report...\n\n"
+        "⛓️ On-chain data\n"
+        "💧 Liquidity data\n"
+        "📈 Market data\n"
+        "🧠 Intelligence processing..."
     )
 
-    await update.message.reply_text(
-        "🧠 Full report generation will be connected "
-        "to the intelligence engine next."
-    )
+    try:
+        result = await analyze_token(
+            token_address
+        )
+
+        response = format_analysis(
+            result
+        )
+
+        await status_message.edit_text(
+            response,
+            parse_mode="Markdown",
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Report generation failed: %s",
+            exc,
+        )
+
+        await status_message.edit_text(
+            "❌ Unable to generate the report right now."
+        )
 
 
 # =========================
@@ -192,10 +260,8 @@ async def error_handler(
     update: object,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """Log unexpected errors."""
-
     logger.error(
-        "Exception while handling update:",
+        "Telegram error:",
         exc_info=context.error,
     )
 
@@ -205,7 +271,6 @@ async def error_handler(
 # =========================
 
 def main():
-    """Start the Telegram bot."""
 
     application = (
         Application.builder()
@@ -237,9 +302,13 @@ def main():
         CommandHandler("report", report)
     )
 
-    application.add_error_handler(error_handler)
+    application.add_error_handler(
+        error_handler
+    )
 
-    logger.info("Web3 Oasis bot is starting...")
+    logger.info(
+        "Web3 Oasis is starting..."
+    )
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
