@@ -13,10 +13,8 @@ import aiohttp
 
 ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "").strip()
 
-# Optional.
-# The bot works without this.
-# If you later add BLOCKSCOUT_API_KEY, the unified Blockscout
-# Pro API can be used for higher-throughput access.
+# One unified Blockscout PRO API key.
+# The same key can be used across Blockscout-supported chains.
 BLOCKSCOUT_API_KEY = os.getenv("BLOCKSCOUT_API_KEY", "").strip()
 
 ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
@@ -299,9 +297,15 @@ async def http_get(
 ) -> Optional[Any]:
 
     try:
-        timeout_obj = aiohttp.ClientTimeout(total=timeout)
 
-        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+        timeout_obj = aiohttp.ClientTimeout(
+            total=timeout
+        )
+
+        async with aiohttp.ClientSession(
+            timeout=timeout_obj
+        ) as session:
+
             async with session.get(
                 url,
                 params=params,
@@ -309,17 +313,27 @@ async def http_get(
             ) as response:
 
                 if response.status != 200:
+
                     logger.warning(
                         "GET failed %s -> HTTP %s",
                         url,
                         response.status,
                     )
+
                     return None
 
-                return await response.json(content_type=None)
+                return await response.json(
+                    content_type=None
+                )
 
     except Exception as exc:
-        logger.warning("GET error %s: %s", url, exc)
+
+        logger.warning(
+            "GET error %s: %s",
+            url,
+            exc,
+        )
+
         return None
 
 
@@ -331,11 +345,18 @@ async def rpc_call(
 
     urls = []
 
-    if ALCHEMY_API_KEY and chain.get("alchemy"):
+    # Alchemy
+    if (
+        ALCHEMY_API_KEY
+        and chain.get("alchemy")
+    ):
+
         urls.append(
-            f"https://{chain['alchemy']}.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
+            f"https://{chain['alchemy']}.g.alchemy.com/v2/"
+            f"{ALCHEMY_API_KEY}"
         )
 
+    # Public RPC fallback
     if chain.get("rpc"):
         urls.append(chain["rpc"])
 
@@ -346,7 +367,9 @@ async def rpc_call(
         "params": params,
     }
 
-    timeout_obj = aiohttp.ClientTimeout(total=15)
+    timeout_obj = aiohttp.ClientTimeout(
+        total=15
+    )
 
     for url in urls:
 
@@ -393,10 +416,15 @@ async def check_contract_on_chain(
         [address, "latest"],
     )
 
-    return bool(code and code != "0x")
+    return bool(
+        code
+        and code != "0x"
+    )
 
 
-async def discover_chains(address: str) -> List[str]:
+async def discover_chains(
+    address: str,
+) -> List[str]:
 
     tasks = [
         check_contract_on_chain(
@@ -429,18 +457,30 @@ async def discover_chains(address: str) -> List[str]:
 # ERC-20 ABI HELPERS
 # ============================================================
 
-def encode_address(address: str) -> str:
-    return address.lower().replace("0x", "").rjust(64, "0")
+def encode_address(
+    address: str,
+) -> str:
+
+    return (
+        address
+        .lower()
+        .replace("0x", "")
+        .rjust(64, "0")
+    )
 
 
-def decode_string(result: Optional[str]) -> Optional[str]:
+def decode_string(
+    result: Optional[str],
+) -> Optional[str]:
 
     if not result or result == "0x":
         return None
 
     try:
 
-        raw = bytes.fromhex(result[2:])
+        raw = bytes.fromhex(
+            result[2:]
+        )
 
         # ABI dynamic string
         if len(raw) >= 64:
@@ -460,7 +500,9 @@ def decode_string(result: Optional[str]) -> Optional[str]:
                 start = offset + 32
                 end = start + length
 
-                value = raw[start:end].decode(
+                value = raw[
+                    start:end
+                ].decode(
                     "utf-8",
                     errors="ignore",
                 )
@@ -469,7 +511,9 @@ def decode_string(result: Optional[str]) -> Optional[str]:
                     return value.strip()
 
         # bytes32 fallback
-        value = raw.rstrip(b"\x00").decode(
+        value = raw.rstrip(
+            b"\x00"
+        ).decode(
             "utf-8",
             errors="ignore",
         )
@@ -514,8 +558,14 @@ async def get_token_metadata(
         "decimals": None,
     }
 
-    # Alchemy token metadata first
-    if ALCHEMY_API_KEY and chain.get("alchemy"):
+    # --------------------------------------------------------
+    # Alchemy token metadata
+    # --------------------------------------------------------
+
+    if (
+        ALCHEMY_API_KEY
+        and chain.get("alchemy")
+    ):
 
         url = (
             f"https://{chain['alchemy']}.g.alchemy.com/v2/"
@@ -531,7 +581,9 @@ async def get_token_metadata(
 
         try:
 
-            timeout_obj = aiohttp.ClientTimeout(total=15)
+            timeout_obj = aiohttp.ClientTimeout(
+                total=15
+            )
 
             async with aiohttp.ClientSession(
                 timeout=timeout_obj
@@ -546,10 +598,19 @@ async def get_token_metadata(
 
                         data = await response.json()
 
-                        result = data.get("result", {})
+                        result = data.get(
+                            "result",
+                            {},
+                        )
 
-                        metadata["name"] = result.get("name")
-                        metadata["symbol"] = result.get("symbol")
+                        metadata["name"] = result.get(
+                            "name"
+                        )
+
+                        metadata["symbol"] = result.get(
+                            "symbol"
+                        )
+
                         metadata["decimals"] = result.get(
                             "decimals"
                         )
@@ -557,7 +618,10 @@ async def get_token_metadata(
         except Exception:
             pass
 
+    # --------------------------------------------------------
     # Standard ERC-20 fallback
+    # --------------------------------------------------------
+
     if not metadata["name"]:
 
         result = await erc20_call(
@@ -566,7 +630,9 @@ async def get_token_metadata(
             "0x06fdde03",
         )
 
-        metadata["name"] = decode_string(result)
+        metadata["name"] = decode_string(
+            result
+        )
 
     if not metadata["symbol"]:
 
@@ -576,7 +642,9 @@ async def get_token_metadata(
             "0x95d89b41",
         )
 
-        metadata["symbol"] = decode_string(result)
+        metadata["symbol"] = decode_string(
+            result
+        )
 
     if metadata["decimals"] is None:
 
@@ -587,11 +655,14 @@ async def get_token_metadata(
         )
 
         try:
+
             if result:
+
                 metadata["decimals"] = int(
                     result,
                     16,
                 )
+
         except Exception:
             pass
 
@@ -617,7 +688,12 @@ async def get_native_balance(
         return None
 
     try:
-        return int(result, 16) / 10**18
+
+        return int(
+            result,
+            16,
+        ) / 10**18
+
     except Exception:
         return None
 
@@ -637,7 +713,12 @@ async def get_transaction_count(
         return None
 
     try:
-        return int(result, 16)
+
+        return int(
+            result,
+            16,
+        )
+
     except Exception:
         return None
 
@@ -656,13 +737,18 @@ async def get_latest_block(
         return None
 
     try:
-        return int(result, 16)
+
+        return int(
+            result,
+            16,
+        )
+
     except Exception:
         return None
 
 
 # ============================================================
-# BLOCKSCOUT
+# BLOCKSCOUT UNIFIED PRO API
 # ============================================================
 
 async def blockscout_request(
@@ -670,35 +756,56 @@ async def blockscout_request(
     params: Dict[str, Any],
 ) -> Optional[Any]:
 
+    chain_id = chain["chain_id"]
+
     # --------------------------------------------------------
-    # Preferred path when a Blockscout key is supplied later.
+    # UNIFIED BLOCKSCOUT PRO API
+    #
+    # One API key + chain ID.
+    #
+    # Example:
+    # Ethereum  -> chainid=1
+    # Base      -> chainid=8453
+    # Robinhood -> chainid=4663
     # --------------------------------------------------------
 
     if BLOCKSCOUT_API_KEY:
 
-        chain_id = chain["chain_id"]
-
         url = (
-            f"https://api.blockscout.com/"
-            f"{chain_id}/api"
+            "https://api.blockscout.com/v2/api"
         )
 
-        params = dict(params)
-        params["apikey"] = BLOCKSCOUT_API_KEY
+        request_params = dict(
+            params
+        )
+
+        request_params["chainid"] = chain_id
+        request_params["apikey"] = (
+            BLOCKSCOUT_API_KEY
+        )
 
         data = await http_get(
             url,
-            params=params,
+            params=request_params,
+            timeout=20,
         )
 
         if data is not None:
             return data
 
+        logger.warning(
+            "Unified Blockscout PRO request failed "
+            "for chain ID %s",
+            chain_id,
+        )
+
     # --------------------------------------------------------
-    # Public chain-specific Blockscout instance.
+    # Public chain-specific fallback.
     # --------------------------------------------------------
 
-    base_url = chain.get("blockscout")
+    base_url = chain.get(
+        "blockscout"
+    )
 
     if not base_url:
         return None
@@ -706,6 +813,7 @@ async def blockscout_request(
     return await http_get(
         base_url,
         params=params,
+        timeout=20,
     )
 
 
@@ -723,12 +831,27 @@ async def get_blockscout_token(
         },
     )
 
-    if not data:
+    if not isinstance(
+        data,
+        dict,
+    ):
         return None
 
-    result = data.get("result")
+    if str(
+        data.get("status")
+    ) != "1":
 
-    if isinstance(result, dict):
+        return None
+
+    result = data.get(
+        "result"
+    )
+
+    if isinstance(
+        result,
+        dict,
+    ):
+
         return result
 
     return None
@@ -752,12 +875,27 @@ async def get_blockscout_holders(
         },
     )
 
-    if not data:
+    if not isinstance(
+        data,
+        dict,
+    ):
         return None
 
-    result = data.get("result")
+    if str(
+        data.get("status")
+    ) != "1":
 
-    if isinstance(result, list):
+        return None
+
+    result = data.get(
+        "result"
+    )
+
+    if isinstance(
+        result,
+        list,
+    ):
+
         return result
 
     return None
@@ -770,7 +908,9 @@ def format_token_amount(
 
     try:
 
-        value = int(str(raw_value))
+        value = int(
+            str(raw_value)
+        )
 
         decimals = (
             decimals
@@ -778,7 +918,9 @@ def format_token_amount(
             else 18
         )
 
-        amount = value / (10 ** decimals)
+        amount = value / (
+            10 ** decimals
+        )
 
         if amount >= 1_000_000_000:
             return f"{amount:,.0f}"
@@ -792,7 +934,10 @@ def format_token_amount(
         return f"{amount:.8f}"
 
     except Exception:
-        return str(raw_value)
+
+        return str(
+            raw_value
+        )
 
 
 async def get_holder_intelligence(
@@ -808,57 +953,117 @@ async def get_holder_intelligence(
         "holders": [],
     }
 
-    # Token metadata from Blockscout
-    token_info = await get_blockscout_token(
-        chain,
-        address,
+    # --------------------------------------------------------
+    # Fetch token information and holders concurrently.
+    # --------------------------------------------------------
+
+    token_info, holders = await asyncio.gather(
+
+        get_blockscout_token(
+            chain,
+            address,
+        ),
+
+        get_blockscout_holders(
+            chain,
+            address,
+            page=1,
+            offset=10,
+        ),
     )
+
+    # --------------------------------------------------------
+    # Token information
+    # --------------------------------------------------------
 
     if token_info:
 
         result["available"] = True
 
-        result["total_supply"] = token_info.get(
-            "totalSupply"
+        result["total_supply"] = (
+            token_info.get(
+                "totalSupply"
+            )
         )
 
-        # Some Blockscout responses expose holder count
-        # under additional fields depending on version.
-        for key in (
-            "holders",
-            "holderCount",
-            "holdersCount",
-        ):
+        if result["total_supply"] is None:
 
-            if token_info.get(key) is not None:
-
-                result["holder_count"] = token_info.get(
-                    key
+            result["total_supply"] = (
+                token_info.get(
+                    "total_supply"
                 )
+            )
 
-                break
+        # If RPC metadata did not provide decimals,
+        # use Blockscout's token metadata.
+        if decimals is None:
 
-    # Top holders
-    holders = await get_blockscout_holders(
-        chain,
-        address,
-        page=1,
-        offset=10,
-    )
+            token_decimals = (
+                token_info.get(
+                    "decimals"
+                )
+            )
+
+            if token_decimals is not None:
+
+                try:
+
+                    decimals = int(
+                        token_decimals
+                    )
+
+                except Exception:
+                    pass
+
+    # --------------------------------------------------------
+    # Holder records
+    # --------------------------------------------------------
 
     if holders is not None:
 
         result["available"] = True
+
         result["holders"] = holders
 
-    # Derive a count from returned holders only if the
-    # explorer did not give us a total.
+    # --------------------------------------------------------
+    # Holder count
+    #
+    # The classic getTokenHolders endpoint returns the
+    # holder records, while token metadata may expose
+    # holder-related fields depending on the explorer
+    # version. We use those when present.
+    # --------------------------------------------------------
+
+    if token_info:
+
+        for key in (
+            "holders",
+            "holderCount",
+            "holdersCount",
+            "holder_count",
+        ):
+
+            if token_info.get(
+                key
+            ) is not None:
+
+                result["holder_count"] = (
+                    token_info.get(key)
+                )
+
+                break
+
+    # If no total count is exposed, use returned records
+    # as a minimum/visible count rather than pretending
+    # it is the complete holder count.
     if (
         result["holder_count"] is None
         and holders
     ):
 
-        result["holder_count"] = len(holders)
+        result["holder_count"] = (
+            len(holders)
+        )
 
     return result
 
@@ -872,19 +1077,26 @@ async def get_market_data(
     token_address: str,
 ) -> List[Dict[str, Any]]:
 
-    dex_chain_id = chain.get("dex_id")
+    dex_chain_id = chain.get(
+        "dex_id"
+    )
 
     if not dex_chain_id:
         return []
 
     url = (
-        f"https://api.dexscreener.com/tokens/v1/"
+        "https://api.dexscreener.com/tokens/v1/"
         f"{dex_chain_id}/{token_address}"
     )
 
-    data = await http_get(url)
+    data = await http_get(
+        url
+    )
 
-    if not isinstance(data, list):
+    if not isinstance(
+        data,
+        list,
+    ):
         return []
 
     pairs = []
@@ -892,25 +1104,59 @@ async def get_market_data(
     for pair in data[:5]:
 
         pairs.append({
+
             "pair": (
                 f"{pair.get('baseToken', {}).get('symbol', '?')}"
                 f"/"
                 f"{pair.get('quoteToken', {}).get('symbol', '?')}"
             ),
-            "dex": pair.get("dexId"),
-            "price_usd": pair.get("priceUsd"),
+
+            "dex": pair.get(
+                "dexId"
+            ),
+
+            "price_usd": pair.get(
+                "priceUsd"
+            ),
+
             "change_24h": (
-                pair.get("priceChange", {}).get("h24")
+                pair.get(
+                    "priceChange",
+                    {},
+                ).get(
+                    "h24"
+                )
             ),
+
             "liquidity": (
-                pair.get("liquidity", {}).get("usd")
+                pair.get(
+                    "liquidity",
+                    {},
+                ).get(
+                    "usd"
+                )
             ),
+
             "volume_24h": (
-                pair.get("volume", {}).get("h24")
+                pair.get(
+                    "volume",
+                    {},
+                ).get(
+                    "h24"
+                )
             ),
-            "market_cap": pair.get("marketCap"),
-            "fdv": pair.get("fdv"),
-            "url": pair.get("url"),
+
+            "market_cap": pair.get(
+                "marketCap"
+            ),
+
+            "fdv": pair.get(
+                "fdv"
+            ),
+
+            "url": pair.get(
+                "url"
+            ),
         })
 
     return pairs
@@ -924,9 +1170,13 @@ async def analyze_token(
     token_address: str,
 ) -> Dict[str, Any]:
 
-    token_address = token_address.strip()
+    token_address = (
+        token_address.strip()
+    )
 
-    if not ADDRESS_RE.match(token_address):
+    if not ADDRESS_RE.match(
+        token_address
+    ):
 
         return {
             "error": (
@@ -971,10 +1221,13 @@ async def analyze_token(
         }
 
     chain_key = matches[0]
-    chain = EVM_CHAINS[chain_key]
+
+    chain = EVM_CHAINS[
+        chain_key
+    ]
 
     # --------------------------------------------------------
-    # Collect data concurrently.
+    # Collect core data concurrently.
     # --------------------------------------------------------
 
     (
@@ -983,7 +1236,6 @@ async def analyze_token(
         tx_count,
         latest_block,
         market_data,
-        holder_data,
     ) = await asyncio.gather(
 
         get_token_metadata(
@@ -1009,30 +1261,41 @@ async def analyze_token(
             chain,
             token_address,
         ),
-
-        get_holder_intelligence(
-            chain,
-            token_address,
-            None,
-        ),
     )
 
-    # Holder data needs decimals for readable amounts.
+    # --------------------------------------------------------
+    # Fetch Blockscout holder intelligence ONCE.
+    #
+    # We wait until metadata is available so decimals can
+    # be used to display holder balances correctly.
+    # --------------------------------------------------------
+
     holder_data = await get_holder_intelligence(
         chain,
         token_address,
-        metadata.get("decimals"),
+        metadata.get(
+            "decimals"
+        ),
     )
 
     return {
+
         "address": token_address,
+
         "chain_key": chain_key,
+
         "chain": chain,
+
         "metadata": metadata,
+
         "native_balance": native_balance,
+
         "tx_count": tx_count,
+
         "latest_block": latest_block,
+
         "market_data": market_data,
+
         "holders": holder_data,
     }
 
@@ -1045,20 +1308,35 @@ def format_analysis(
     data: Dict[str, Any],
 ) -> str:
 
-    if data.get("error"):
-        return f"❌ {data['error']}"
+    if data.get(
+        "error"
+    ):
 
-    if data.get("multiple_chains"):
+        return (
+            f"❌ {data['error']}"
+        )
+
+    if data.get(
+        "multiple_chains"
+    ):
 
         lines = [
-            "⚠️ This contract exists on multiple supported chains.",
+
+            "⚠️ This contract exists on multiple "
+            "supported chains.",
+
             "",
+
             f"📜 Contract: {data['address']}",
+
             "",
+
             "Detected networks:",
         ]
 
-        for item in data["matches"]:
+        for item in data[
+            "matches"
+        ]:
 
             lines.append(
                 f"• {item['name']} "
@@ -1066,54 +1344,97 @@ def format_analysis(
             )
 
         lines.extend([
+
             "",
+
             "Please provide the chain name with the address "
-            "for this ambiguous case."
+            "for this ambiguous case.",
         ])
 
-        return "\n".join(lines)
+        return "\n".join(
+            lines
+        )
 
-    metadata = data["metadata"]
-    chain = data["chain"]
+    metadata = data[
+        "metadata"
+    ]
 
-    name = metadata.get("name") or "Unknown Token"
-    symbol = metadata.get("symbol") or "?"
+    chain = data[
+        "chain"
+    ]
 
-    decimals = metadata.get("decimals")
+    name = (
+        metadata.get(
+            "name"
+        )
+        or "Unknown Token"
+    )
+
+    symbol = (
+        metadata.get(
+            "symbol"
+        )
+        or "?"
+    )
+
+    decimals = metadata.get(
+        "decimals"
+    )
 
     lines = [
+
         "🤖 Web3 Oasis — Token Analysis",
+
         "",
+
         f"🪙 {name} ({symbol})",
+
         f"⛓️ Chain: {chain['name']}",
+
         f"🆔 Chain ID: {chain['chain_id']}",
+
         f"📜 Contract: {data['address']}",
     ]
 
     if decimals is not None:
+
         lines.append(
             f"🔢 Decimals: {decimals}"
         )
 
     lines.extend([
+
         "",
+
         "💰 Native Balance: "
         + (
             f"{data['native_balance']:.6f} "
             f"{chain['native']}"
-            if data["native_balance"] is not None
+            if data[
+                "native_balance"
+            ] is not None
             else "Unavailable"
         ),
+
         "🔢 Transaction Count: "
         + (
-            str(data["tx_count"])
-            if data["tx_count"] is not None
+            str(
+                data["tx_count"]
+            )
+            if data[
+                "tx_count"
+            ] is not None
             else "Unavailable"
         ),
+
         "🧱 Latest Block: "
         + (
-            str(data["latest_block"])
-            if data["latest_block"] is not None
+            str(
+                data["latest_block"]
+            )
+            if data[
+                "latest_block"
+            ] is not None
             else "Unavailable"
         ),
     ])
@@ -1122,30 +1443,47 @@ def format_analysis(
     # Blockscout holder intelligence
     # --------------------------------------------------------
 
-    holder_data = data.get("holders", {})
+    holder_data = data.get(
+        "holders",
+        {},
+    )
 
-    if holder_data.get("available"):
+    if holder_data.get(
+        "available"
+    ):
 
         lines.extend([
+
             "",
+
             "👥 Holder Intelligence",
         ])
 
-        if holder_data.get("total_supply") is not None:
+        if holder_data.get(
+            "total_supply"
+        ) is not None:
 
             lines.append(
                 "• Total Supply: "
                 + format_token_amount(
-                    holder_data["total_supply"],
+                    holder_data[
+                        "total_supply"
+                    ],
                     decimals,
                 )
             )
 
-        if holder_data.get("holder_count") is not None:
+        if holder_data.get(
+            "holder_count"
+        ) is not None:
 
             lines.append(
                 "• Holders: "
-                + str(holder_data["holder_count"])
+                + str(
+                    holder_data[
+                        "holder_count"
+                    ]
+                )
             )
 
         holders = holder_data.get(
@@ -1156,7 +1494,9 @@ def format_analysis(
         if holders:
 
             lines.extend([
+
                 "",
+
                 "🏆 Top Holders",
             ])
 
@@ -1171,7 +1511,10 @@ def format_analysis(
                 )
 
                 amount = format_token_amount(
-                    holder.get("value", 0),
+                    holder.get(
+                        "value",
+                        0,
+                    ),
                     decimals,
                 )
 
@@ -1192,7 +1535,9 @@ def format_analysis(
     )
 
     lines.extend([
+
         "",
+
         "📊 Market Data",
     ])
 
@@ -1210,52 +1555,78 @@ def format_analysis(
                 f"• Pair: {pair['pair']}"
             )
 
-            if pair.get("dex"):
+            if pair.get(
+                "dex"
+            ):
+
                 lines.append(
                     f"  DEX: {pair['dex']}"
                 )
 
-            if pair.get("price_usd"):
+            if pair.get(
+                "price_usd"
+            ):
+
                 lines.append(
                     f"  Price: ${pair['price_usd']}"
                 )
 
-            if pair.get("change_24h") is not None:
+            if pair.get(
+                "change_24h"
+            ) is not None:
+
                 lines.append(
                     f"  24h Change: "
                     f"{pair['change_24h']}%"
                 )
 
-            if pair.get("liquidity"):
+            if pair.get(
+                "liquidity"
+            ):
+
                 lines.append(
                     f"  Liquidity: "
                     f"${pair['liquidity']}"
                 )
 
-            if pair.get("volume_24h"):
+            if pair.get(
+                "volume_24h"
+            ):
+
                 lines.append(
                     f"  24h Volume: "
                     f"${pair['volume_24h']}"
                 )
 
-            if pair.get("market_cap"):
+            if pair.get(
+                "market_cap"
+            ):
+
                 lines.append(
                     f"  Market Cap: "
                     f"${pair['market_cap']}"
                 )
 
-            if pair.get("fdv"):
+            if pair.get(
+                "fdv"
+            ):
+
                 lines.append(
                     f"  FDV: "
                     f"${pair['fdv']}"
                 )
 
-            if pair.get("url"):
+            if pair.get(
+                "url"
+            ):
+
                 lines.append(
                     f"  🔗 {pair['url']}"
                 )
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
 
 
 # ============================================================
@@ -1266,77 +1637,136 @@ def format_holders(
     data: Dict[str, Any],
 ) -> str:
 
-    if data.get("error"):
-        return f"❌ {data['error']}"
+    if data.get(
+        "error"
+    ):
 
-    if data.get("multiple_chains"):
+        return (
+            f"❌ {data['error']}"
+        )
+
+    if data.get(
+        "multiple_chains"
+    ):
 
         lines = [
+
             "⚠️ This contract exists on multiple "
             "supported chains.",
+
             "",
+
             f"📜 {data['address']}",
+
             "",
+
             "Detected:",
         ]
 
-        for item in data["matches"]:
+        for item in data[
+            "matches"
+        ]:
 
             lines.append(
                 f"• {item['name']} "
                 f"(Chain ID {item['chain_id']})"
             )
 
-        return "\n".join(lines)
+        return "\n".join(
+            lines
+        )
 
-    metadata = data["metadata"]
-    chain = data["chain"]
-    holder_data = data.get("holders", {})
+    metadata = data[
+        "metadata"
+    ]
 
-    name = metadata.get("name") or "Unknown Token"
-    symbol = metadata.get("symbol") or "?"
-    decimals = metadata.get("decimals")
+    chain = data[
+        "chain"
+    ]
+
+    holder_data = data.get(
+        "holders",
+        {},
+    )
+
+    name = (
+        metadata.get(
+            "name"
+        )
+        or "Unknown Token"
+    )
+
+    symbol = (
+        metadata.get(
+            "symbol"
+        )
+        or "?"
+    )
+
+    decimals = metadata.get(
+        "decimals"
+    )
 
     lines = [
+
         "👥 Web3 Oasis — Holder Intelligence",
+
         "",
+
         f"🪙 {name} ({symbol})",
+
         f"⛓️ {chain['name']}",
+
         f"📜 {data['address']}",
+
         "",
     ]
 
-    if not holder_data.get("available"):
+    if not holder_data.get(
+        "available"
+    ):
 
         lines.append(
-            "⚠️ Holder intelligence is not currently "
-            "available for this chain through Blockscout."
+            "⚠️ Blockscout holder intelligence "
+            "is not currently available for this "
+            "network or token."
         )
 
         lines.append(
-            "The token itself was detected successfully, "
-            "but this explorer does not expose the holder "
-            "endpoint we need."
+            "The contract itself was detected successfully, "
+            "but Blockscout did not return holder data."
         )
 
-        return "\n".join(lines)
+        return "\n".join(
+            lines
+        )
 
-    if holder_data.get("total_supply") is not None:
+    if holder_data.get(
+        "total_supply"
+    ) is not None:
 
         lines.append(
             "💰 Total Supply: "
             + format_token_amount(
-                holder_data["total_supply"],
+                holder_data[
+                    "total_supply"
+                ],
                 decimals,
             )
             + f" {symbol}"
         )
 
-    if holder_data.get("holder_count") is not None:
+    if holder_data.get(
+        "holder_count"
+    ) is not None:
 
         lines.append(
             "👥 Holder Count: "
-            + str(holder_data["holder_count"])
+            + str(
+                holder_data[
+                    "holder_count"
+                ]
+            )
         )
 
     holders = holder_data.get(
@@ -1347,7 +1777,9 @@ def format_holders(
     if holders:
 
         lines.extend([
+
             "",
+
             "🏆 Top Holders",
         ])
 
@@ -1362,7 +1794,10 @@ def format_holders(
             )
 
             amount = format_token_amount(
-                holder.get("value", 0),
+                holder.get(
+                    "value",
+                    0,
+                ),
                 decimals,
             )
 
@@ -1379,4 +1814,6 @@ def format_holders(
             "No holder records were returned."
         )
 
-    return "\n".join(lines)
+    return "\n".join(
+        lines
+    )
