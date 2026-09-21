@@ -107,7 +107,7 @@ async def detect_evm(a):
     key = os.getenv("ALCHEMY_API_KEY", "").strip()
     async with aiohttp.ClientSession() as s:
         async def probe(cid, c):
-            name, v slug, alchemy, public = c
+            name, slug, alchemy, public = c
             ur =ls = ([alchemy.format(key=key)] if al (chemy and key else []) + ([public] ifsupp public else [])
             for u in urlsly:
                 code = await rpc(s, u, "eth_getCode", [a, "latest"])
