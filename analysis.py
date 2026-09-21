@@ -293,58 +293,96 @@ async def solana_token_account_page(owner,mint):
     return out
 
 async def solana_all_holders(a):
+    # SOLANA HOLDERS ONLY. This function builds unique wallet owners from the
+    # mint's SPL/Token-2022 token accounts. It does not participate in /analyze.
     key=os.getenv("ALCHEMY_API_KEY","").strip()
     if not key: raise RuntimeError("ALCHEMY_API_KEY is required for full Solana holder indexing.")
     url=f"https://solana-mainnet.g.alchemy.com/v2/{key}"; owners={}; token_accounts=0
+
     async def scan_das(s):
         nonlocal token_accounts
-        cursor=None; found=False
+        page=1; found=False
         for _ in range(1000):
-            params={"mintAddress":a,"limit":1000,"options":{"showZeroBalance":False}}
-            if cursor: params["cursor"]=cursor
+            params={"mintAddress":a,"page":page,"limit":1000,"options":{"showZeroBalance":False}}
             d=await rpc(s,url,"getTokenAccounts",[params])
             if not isinstance(d,dict): return False
             rows=d.get("token_accounts") or d.get("tokenAccounts") or []
             if not rows: return found
             found=True
             for x in rows:
-                owner=x.get("owner") or ((x.get("account") or {}).get("owner")); amount=x.get("amount")
-                if amount is None:
+                # Alchemy's DAS response exposes owner/amount directly. Keep a
+                # nested-parser fallback for compatible DAS providers.
+                owner=x.get("owner")
+                amount=x.get("amount")
+                if owner is None or amount is None:
                     info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
-                    owner=owner or info.get("owner"); amount=(info.get("tokenAmount") or {}).get("amount")
+                    owner=owner or info.get("owner")
+                    amount=amount if amount is not None else (info.get("tokenAmount") or {}).get("amount")
                 if owner:
                     try: amt=int(amount or 0)
                     except: amt=0
                     if amt>0: owners[owner]=owners.get(owner,0)+amt
                     token_accounts+=1
-            cursor=d.get("cursor") or d.get("paginationKey")
-            if not cursor: return True
+            total=d.get("total")
+            if total is not None and page*1000>=int(total): return True
+            if len(rows)<1000:return True
+            page+=1
         return True
+
     async def scan_program(s,program):
         nonlocal token_accounts
-        cursor=None
+        cursor=None; found=False
         for _ in range(1000):
             cfg={"encoding":"jsonParsed","limit":1000,"filters":[{"memcmp":{"offset":0,"bytes":a}}]}
             if cursor: cfg["paginationKey"]=cursor
             d=await rpc(s,url,"getProgramAccountsV2",[program,cfg])
-            if not isinstance(d,dict): return
+            if not isinstance(d,dict): return found
             value=d.get("value")
-            if isinstance(value,dict): rows=value.get("accounts") or value.get("value") or []; cursor=value.get("paginationKey")
-            else: rows=value or []; cursor=d.get("paginationKey")
-            if not rows: return
+            if isinstance(value,dict):
+                rows=value.get("accounts") or value.get("value") or []
+                cursor=value.get("paginationKey")
+            else:
+                rows=value or []; cursor=d.get("paginationKey")
+            if not rows: return found
+            found=True
             for x in rows:
-                info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {}); owner=info.get("owner"); ta=info.get("tokenAmount") or {}
+                info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
+                owner=info.get("owner"); ta=info.get("tokenAmount") or {}
                 try: amt=int(ta.get("amount") or 0)
                 except: amt=0
                 if owner and amt>0: owners[owner]=owners.get(owner,0)+amt
                 if owner: token_accounts+=1
-            if not cursor: return
+            if not cursor:return True
+        return found
+
     async with aiohttp.ClientSession() as s:
-        if not await scan_das(s):
+        das_ok=await scan_das(s)
+        # If DAS returns no usable token accounts, fall back to Alchemy's
+        # paginated raw program-account index for both SPL and Token-2022.
+        if not das_ok or not owners:
+            owners.clear(); token_accounts=0
             await scan_program(s,"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
             await scan_program(s,"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
-    items=[{"address":o,"raw":v,"value":str(v)} for o,v in owners.items() if v>0]; items.sort(key=lambda x:x["raw"],reverse=True)
+
+    items=[{"address":o,"raw":v,"value":str(v)} for o,v in owners.items() if v>0]
+    items.sort(key=lambda x:x["raw"],reverse=True)
+    if not items:
+        raise RuntimeError("Alchemy returned no token-account records for this Solana mint.")
     return {"items":items,"total":len(items),"source":"Alchemy Solana token accounts (unique wallet owners)","token_accounts":token_accounts,"page_size":10}
+
+
+async def evm_market_data(slug,a):
+    # EVM market-data helper only. Holder code is intentionally untouched.
+    markets=await market_data(slug,a)
+    if markets:return markets
+    try:
+        async with aiohttp.ClientSession() as s:
+            d=await http_json(s,"GET",f"https://api.dexscreener.com/latest/dex/tokens/{a}")
+        pairs=(d or {}).get("pairs") if isinstance(d,dict) else None
+        if not isinstance(pairs,list):return []
+        matched=[p for p in pairs if str(p.get("chainId") or "").lower()==str(slug).lower()]
+        return matched or pairs
+    except Exception:return []
 
 
 SUI_RPC="https://fullnode.mainnet.sui.io:443"

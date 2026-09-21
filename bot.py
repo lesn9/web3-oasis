@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from analysis import (
     analyze_address, evm_holders, evm_holder_next, solana_all_holders,
     sui_holders, tron_holders, tron_holder_page, ton_all_holders,
-    wallet_details, market_data, fmt_number, short_address, solana_token_account_page
+    wallet_details, market_data, evm_market_data, fmt_number, short_address, solana_token_account_page
 )
 
 SESSIONS = {}
@@ -45,7 +45,7 @@ async def analyze_cmd(u,c):
                 t=(f"🤖 <b>Web3 Oasis — Token Analysis</b>\n\n🪙 <b>{html.escape(x['name'])}</b> ({html.escape(x['symbol'])})\n"
                    f"⛓️ Chain: <b>{html.escape(x['chain'])}</b>\n🆔 Chain ID: {x['chain_id']}\n📜 Contract: <code>{html.escape(a)}</code>\n"
                    f"🔢 Decimals: {x['decimals']}\n💰 Total Supply: {fmt_number(x['total_supply'])} {html.escape(x['symbol'])}\n")
-                markets=await market_data(x['slug'],a)
+                markets=await evm_market_data(x['slug'],a)
                 if markets:
                     p=markets[0];liq=(p.get('liquidity') or {}).get('usd')
                     t+=(f"\n📊 <b>Market Data</b>\n• Pair: {html.escape((p.get('baseToken') or {}).get('symbol','?'))}/{html.escape((p.get('quoteToken') or {}).get('symbol','?'))}\n"
