@@ -1,4 +1,4 @@
-import os, asyncio, re, time, aiohttp
+import os, asyncio, re, time, aiohttp, json
 
 TIMEOUT = aiohttp.ClientTimeout(total=20)
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -38,463 +38,363 @@ EVM_CHAINS = {
     2741:("Abstract","abstract","https://abstract-mainnet.g.alchemy.com/v2/{key}","https://api.mainnet.abs.xyz"),
 }
 
-EVM_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
-SOL_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
-SUI_RE = re.compile(r"^0x[a-fA-F0-9]{64}$")
-TRON_RE = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
-TON_RE = re.compile(r"^(EQ|U               Q)[A-Za-z0-9_-]{46}$")
-SELECTORS = {"name":"0x06fdde03","symbol":"0x95d89b41","decimals":"0x313ce567","totalSupply":"0x18160ddd"}
-
-HOLDER_CACHE = {}
-CACHE_TTL = 600
-BLOCKVISION_BASE = "https://api.blockvision.org/v2/sui"
+EVM_RE=re.compile(r"^0x[a-fA-F0-9]{40}$")
+SOL_RE=re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+SUI_RE=re.compile(r"^0x[a-fA-F0-9]{64}$")
+TRON_RE=re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
+TON_RE=re.compile(r"^(EQ|UQ)[A-Za-z0-9_-]{46}$")
+SELECTORS={"name":"0x06fdde03","symbol":"0x95d89b41","decimals":"0x313ce567","totalSupply":"0x18160ddd"}
 
 
-def short_address(a, l=10, r=8):
-    return a if len(a) <= l+r+3 else f"{a[:l]}...{a[-r:]}"
+def short_address(a,l=10,r=8):
+    return a if len(a)<=l+r+3 else f"{a[:l]}...{a[-r:]}"
 
 
 def fmt_number(v):
-    try:
-        v = float(v)
-    except:
-        return str(v)
-    for d, s in ((1e12, 'T'), (1e9, 'B'), (1e6, 'M'), (1e3, 'K')):
-        if abs(v) >= d:
-            return f"{v/d:.2f}{s}"
+    try:v=float(v)
+    except:return str(v)
+    for d,s in ((1e12,"T"),(1e9,"B"),(1e6,"M"),(1e3,"K")):
+        if abs(v)>=d:return f"{v/d:.2f}{s}"
     return f"{v:.2f}"
 
 
 def detect_address_family(a):
-    if EVM_RE.fullmatch(a): return "evm"
-    if TRON_RE.fullmatch(a): return "tron"
-    if TON_RE.fullmatch(a): return "ton"
-    if SUI_RE.fullmatch(a) or ("::" in a and a.startswith("0x")): return "sui"
-    if SOL_RE.fullmatch(a): return "solana"
+    if EVM_RE.fullmatch(a):return "evm"
+    if TRON_RE.fullmatch(a):return "tron"
+    if TON_RE.fullmatch(a):return "ton"
+    if SUI_RE.fullmatch(a) or ("::" in a and a.startswith("0x")):return "sui"
+    if SOL_RE.fullmatch(a):return "solana"
     return "unknown"
 
 
-async def http_json(s, method, url, **kw):
+async def http_json(s,method,url,**kw):
     try:
-        async with s.request(method, url, timeout=TIMEOUT, **kw) as r:
-            text = await r.text()
-            if r.status != 200:
-                return {"__http_error__": r.status, "__text__": text[:1200]}
-            try:
-                return await r.json(content_type=None)
-            except:
-                return None
-    except Exception:
-        return None
+        async with s.request(method,url,timeout=TIMEOUT,**kw) as r:
+            text=await r.text()
+            if r.status!=200:return {"__http_error__":r.status,"__text__":text[:1200]}
+            try:return json.loads(text)
+            except:return None
+    except Exception:return None
 
 
-async def rpc(s, url, method, params):
-    d = await http_json(s, "POST", url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-    if not d or d.get("error"):
-        return None
+async def rpc(s,url,method,params):
+    d=await http_json(s,"POST",url,json={"jsonrpc":"2.0","id":1,"method":method,"params":params})
+    if not d or d.get("error"):return None
     return d.get("result")
 
 
 def alchemy_url(chain_id):
-    key = os.getenv("ALCHEMY_API_KEY", "").strip()
-    if not key:
-        return None
-    c = EVM_CHAINS[chain_id]
-    return c[2].format(key=key) if c[2] else None
+    key=os.getenv("ALCHEMY_API_KEY","").strip()
+    c=EVM_CHAINS[chain_id]
+    return c[2].format(key=key) if c[2] and key else None
 
 
 async def detect_evm(a):
-    key = os.getenv("ALCHEMY_API_KEY", "").strip()
+    key=os.getenv("ALCHEMY_API_KEY","").strip()
     async with aiohttp.ClientSession() as s:
-        async def probe(cid, c):
-            name, slug, alchemy, public = c
-            ur =ls = ([alchemy.format(key=key)] if al (chemy and key else []) + ([public] ifsupp public else [])
-            for u in urlsly:
-                code = await rpc(s, u, "eth_getCode", [a, "latest"])
-                if code and code != "0x":
-                    return {"chain_id": cid, "name": name, "slug": slug}
+        async def probe(cid,c):
+            name,slug,alchemy,public=c
+            urls=([alchemy.format(key=key)] if alchemy and key else[])+([public] if public else[])
+            for u in urls:
+                code=await rpc(s,u,"eth_getCode",[a,"latest"])
+                if code and code!="0x":return {"chain_id":cid,"name":name,"slug":slug}
             return None
-        out = await asyncio.gather(*(probe(cid, c) for cid, c in EVM_CHAINS.items()), return_exceptions=True)
-    return [x for x in out if isinstance(x, dict)]
+        out=await asyncio.gather(*(probe(cid,c) for cid,c in EVM_CHAINS.items()),return_exceptions=True)
+    return [x for x in out if isinstance(x,dict)]
 
 
 def dec_uint(x):
-    try:
-        return int(x, 16)
-    except:
-        return 0
+    try:return int(x,16)
+    except:return 0
 
 
 def dec_string(x):
     try:
-        h = x[2:]
-        if len(h) >= 128:
-            off = int(h[:64], 16) * 2
-            if off + 64 <= len(h):
-                n = int(h[off:off+64], 16)
-                raw = h[off+64:off+64+n*2]
-                return bytes.fromhex(raw).decode(errors="ignore").strip()
+        h=x[2:]
+        if len(h)>=128:
+            off=int(h[:64],16)*2
+            if off+64<=len(h):
+                n=int(h[off:off+64],16)
+                return bytes.fromhex(h[off+64:off+64+n*2]).decode(errors="ignore").strip()
         return bytes.fromhex(h).decode(errors="ignore").strip("\x00").strip()
-    except:
-        return ""
+    except:return ""
 
 
-async def evm_token(a, c):
-    key = os.getenv("ALCHEMY_API_KEY", "").strip()
-    _, _, alchemy, public = EVM_CHAINS[c["chain_id"]]
-    urls = ([alchemy.format(key=key)] if alchemy and key else []) + ([public] if public else [])
-    last = "RPC unavailable"
+async def evm_token(a,c):
+    key=os.getenv("ALCHEMY_API_KEY","").strip();_,_,alchemy,public=EVM_CHAINS[c["chain_id"]]
+    urls=([alchemy.format(key=key)] if alchemy and key else[])+([public] if public else[])
+    last="RPC unavailable"
     for u in urls:
         try:
             async with aiohttp.ClientSession() as s:
-                vals = await asyncio.gather(*(rpc(s, u, "eth_call", [{"to": a, "data": sel}, "latest"]) for sel in SELECTORS.values()))
-            name, sym, dec, sup = vals
-            d = dec_uint(dec)
-            supply = dec_uint(sup) / (10**d if d < 78 else 1)
-            return {"family": "evm", "chain": c["name"], "chain_id": c["chain_id"], "slug": c["slug"], "contract": a,
-                    "name": dec_string(name) or "Unknown Token", "symbol": dec_string(sym) or "???",
-                    "decimals": d, "total_supply": supply}
-        except Exception as e:
-            last = str(e)
+                vals=await asyncio.gather(*(rpc(s,u,"eth_call",[{"to":a,"data":sel},"latest"]) for sel in SELECTORS.values()))
+            name,sym,dec,sup=vals;d=dec_uint(dec);supply=dec_uint(sup)/(10**d if d<78 else 1)
+            return {"family":"evm","chain":c["name"],"chain_id":c["chain_id"],"slug":c["slug"],"contract":a,"name":dec_string(name) or"Unknown Token","symbol":dec_string(sym) or"???","decimals":d,"total_supply":supply}
+        except Exception as e:last=str(e)
     raise RuntimeError(last)
 
 
-def normalize_transfer_value(t):
-    raw = ((t.get("rawContract") or {}).get("value"))
-    if isinstance(raw, str) and raw.startswith("0x"):
+async def blockscout_request(chain_id,path,params=None):
+    key=os.getenv("BLOCKSCOUT_API_KEY","").strip()
+    if not key:return None
+    url=f"https://api.blockscout.com/{chain_id}/api/v2{path}"
+    p=dict(params or {});p["apikey"]=key
+    async with aiohttp.ClientSession() as s:return await http_json(s,"GET",url,params=p)
+
+
+def parse_next_cursor(d):
+    if not isinstance(d,dict):return None
+    np=d.get("next_page_params") or d.get("nextPageParams")
+    return np if isinstance(np,dict) and np else None
+
+
+def normalize_blockscout_holder(x):
+    if not isinstance(x,dict):return None
+    addr=x.get("address_hash") or x.get("address") or x.get("holder_address_hash") or x.get("walletAddress")
+    if isinstance(addr,dict):addr=addr.get("hash") or addr.get("address_hash")
+    if not addr:return None
+    raw=x.get("value") or x.get("balance") or x.get("token_balance") or x.get("amount") or "0"
+    try:raw_int=int(raw)
+    except:raw_int=0
+    return {"address":addr,"raw":raw_int,"value":x.get("value_formatted") or x.get("balance_formatted") or str(raw_int),"percent":x.get("percentage") or x.get("percent")}
+
+
+async def blockscout_holders(a,c,cursor=None,limit=10):
+    params=dict(cursor or {})
+    params.setdefault("items_count", limit)
+    d=await blockscout_request(c["chain_id"],f"/tokens/{a}/holders",params)
+    if not isinstance(d,dict) or d.get("__http_error__"):return {"error":d}
+    rows=d.get("items") or d.get("holders") or d.get("data") or d.get("result") or []
+    items=[]
+    for x in rows:
+        h=normalize_blockscout_holder(x)
+        if h:items.append(h)
+    return {"items":items[:limit],"next":parse_next_cursor(d)}
+
+
+async def blockscout_holder_count(a,c):
+    d=await blockscout_request(c["chain_id"],f"/tokens/{a}/counters")
+    if not isinstance(d,dict) or d.get("__http_error__"):return None
+    candidates=[d.get("token_holders"),d.get("holders"),d.get("holder_count"),d.get("holders_count"),d.get("count")]
+    if isinstance(d.get("data"),dict):candidates += [d["data"].get("token_holders"),d["data"].get("holders"),d["data"].get("count")]
+    for x in candidates:
         try:
-            return int(raw, 16)
-        except:
-            pass
-    v = t.get("value")
-    try:
-        return int(round(float(v) * 10**18))
-    except:
-        return 0
-
-
-async def compute_evm_holders(a, c):
-    key = (c["chain_id"], a.lower())
-    cached = HOLDER_CACHE.get(key)
-    if cached and time.time() - cached["time"] < CACHE_TTL:
-        return cached["data"]
-
-    url = alchemy_url(c["chain_id"])
-    if not url:
-        raise RuntimeError("Alchemy key required for EVM holder scan.")
-
-    transfers = None
-    page_key = None
-    source = "Alchemy Transfer API"
-    max_pages = 500
-
-    async with aiohttp.ClientSession() as s:
-        for _ in range(max_pages):
-            params = {
-                "fromBlock": "0x0", "toBlock": "latest",
-                "contractAddresses": [a], "category": ["erc20"],
-                "excludeZeroValue": False, "maxCount": "0x3e8",
-            }
-            if page_key:
-                params["pageKey"] = page_key
-            d = await rpc(s, url, "alchemy_getAssetTransfers", [params])
-            if d is None:
-                page_key = None
-                transfers = None
-                continue
-            if transfers is None:
-                transfers = []
-            batch = d.get("transfers", [])
-            transfers.extend(batch)
-            page_key = d.get("pageKey")
-            if not page_key:
-                break
-
-    if transfers is None:
-        transfers = await logs_transfers(a, c["chain_id"])
-        source = "ERC-20 Transfer logs"
-    if transfers is None:
-        raise RuntimeError("No indexed ERC-20 transfer history available from Alchemy for this chain.")
-
-    balances = {}
-    for t in transfers:
-        frm = t.get("from")
-        to = t.get("to")
-        if not frm or not to:
-            continue
-        value = normalize_transfer_value(t)
-        frm = frm.lower()
-        to = to.lower()
-        balances[frm] = balances.get(frm, 0) - value
-        balances[to] = balances.get(to, 0) + value
-
-    meta = await evm_token(a, c)
-    decimals = meta["decimals"]
-    scale = 10**decimals
-    holders = [(addr, bal) for addr, bal in balances.items() if bal > 0]
-    holders.sort(key=lambda x: x[1], reverse=True)
-    rows = [{"address": addr, "raw": bal, "value": bal / scale} for addr, bal in holders]
-
-    data = {"items": rows, "total": len(rows), "source": source, "transfers": len(transfers), "meta": meta}
-    HOLDER_CACHE[key] = {"time": time.time(), "data": data}
-    return data
-
-
-async def logs_transfers(a, cid):
-    c = EVM_CHAINS[cid]
-    key = os.getenv("ALCHEMY_API_KEY", "").strip()
-    urls = ([c[2].format(key=key)] if c[2] and key else []) + ([c[3]] if c[3] else [])
-    for url in urls:
-        async with aiohttp.ClientSession() as s:
-            latest = await rpc(s, url, "eth_blockNumber", [])
-            if latest is None:
-                continue
-            hi = int(latest, 16)
-            step = 100000
-            logs = []
-            start = 0
-            while start <= hi:
-                end = min(hi, start + step - 1)
-                flt = {"fromBlock": hex(start), "toBlock": hex(end), "address": a, "topics": [TRANSFER_TOPIC]}
-                d = await rpc(s, url, "eth_getLogs", [flt])
-                if d is None:
-                    if step > 5000:
-                        step //= 2
-                        continue
-                    start = end + 1
-                    continue
-                logs.extend(d)
-                start = end + 1
-                if len(logs) > 200000:
-                    raise RuntimeError("Token has too many Transfer events for an on-demand holder scan.")
-            out = []
-            for lg in logs:
-                topics = lg.get("topics", [])
-                if len(topics) < 3:
-                    continue
-                frm = "0x" + topics[1][-40:]
-                to = "0x" + topics[2][-40:]
-                raw = lg.get("data", "0x")
-                try:
-                    value = int(raw, 16)
-                except:
-                    continue
-                out.append({"from": frm, "to": to, "raw_value": value, "value": value / 1e18})
-            return out
+            if x is not None:return int(x)
+        except:pass
     return None
 
 
-async def solana_token(a):
-    key = os.getenv("ALCHEMY_API_KEY", "").strip()
-    urls = []
-    if key:
-        urls.append(f"https://solana-mainnet.g.alchemy.com/v2/{key}")
-    urls.append("https://api.mainnet-beta.solana.com")
+async def cmc_keyless_holders(a,platform):
+    url="https://pro-api.coinmarketcap.com/public-api/v1/dex/holders/list"
+    body={"tokenAddress":a,"platform":platform,"tag":"tag_all"}
+    async with aiohttp.ClientSession() as s:d=await http_json(s,"POST",url,json=body,headers={"Content-Type":"application/json"})
+    if not isinstance(d,dict) or d.get("__http_error__"):return None
+    rows=d.get("holders") or (d.get("data") or {}).get("holders") or d.get("data") or []
+    items=[]
+    for x in rows:
+        if not isinstance(x,dict):continue
+        addr=x.get("walletAddress") or x.get("address") or x.get("holderAddress")
+        if addr:items.append({"address":addr,"value":x.get("balance") or x.get("actualBalance") or x.get("spotPosition") or "0","percent":x.get("percent")})
+    return items
 
-    last = "Solana RPC unavailable"
+
+async def cmc_keyless_count(a,platform):
+    url="https://pro-api.coinmarketcap.com/public-api/v1/dex/holders/count"
+    async with aiohttp.ClientSession() as s:d=await http_json(s,"GET",url,params={"platform":platform,"tokenAddress":a})
+    if not isinstance(d,dict) or d.get("__http_error__"):return None
+    x=d.get("count") or (d.get("data") or {}).get("count")
+    try:return int(x)
+    except:return None
+
+
+async def evm_holders(a,c):
+    total=await blockscout_holder_count(a,c)
+    first=await blockscout_holders(a,c,None,10)
+    if first.get("items"):
+        return {"provider":"blockscout","items":first["items"],"total":total,"next":first.get("next"),"source":"Blockscout","page_size":10}
+    cmc_items=await cmc_keyless_holders(a,c["slug"])
+    if cmc_items:
+        return {"provider":"cmc","items":cmc_items[:10],"total":await cmc_keyless_count(a,c["slug"]),"next":None,"source":"CoinMarketCap keyless","page_size":10,"all_items":cmc_items}
+    raise RuntimeError("No indexed holder provider returned data for this EVM token.")
+
+
+async def evm_holder_next(a,c,cursor):
+    d=await blockscout_holders(a,c,cursor,10)
+    if d.get("error"):raise RuntimeError("Blockscout holder page request failed.")
+    return d
+
+
+async def solana_token(a):
+    key=os.getenv("ALCHEMY_API_KEY","").strip();urls=([f"https://solana-mainnet.g.alchemy.com/v2/{key}"] if key else[])+["https://api.mainnet-beta.solana.com"]
+    last="Solana RPC unavailable"
     for u in urls:
         try:
             async with aiohttp.ClientSession() as s:
-                asset = await rpc(s, u, "getAsset", [a, {"displayOptions": {"showFungible": True}}])
-                accounts = []
-                total = 0
-                cursor = None
-                for _ in range(50):
-                    params = {"mint": a, "limit": 1000}
-                    if cursor:
-                        params["cursor"] = cursor
-                    d = await rpc(s, u, "getTokenAccounts", [params])
-                    if not d:
-                        break
-                    total = d.get("total", total)
-                    batch = d.get("token_accounts", [])
-                    accounts.extend(batch)
-                    cursor = d.get("cursor")
-                    if not cursor or not batch:
-                        break
-
-                supply = await rpc(s, u, "getTokenSupply", [a])
- or {}).get("value", {})
-                dec = int(v.get("decimals", 0))
-                raw = int(v.get("amount", "0"))
-
-                content = ((asset or {}).get("content") or {})
-                md = content.get("metadata") or {}
-
-                rows = []
-                for acct in accounts:
-                    pubkey = acct.get("pubkey") or acct.get("address") or ""
-                    owner = ((acct.get("account") or {}).get("owner")) or acct.get("owner") or ""
-                    amount = acct.get("uiAmount") or acct.get("amount") or acct.get("uiAmountString") or "0"
-                    rows.append({"address": pubkey, "owner": owner, "value": amount})
-
-                return {
-                    "family": "solana", "chain": "Solana", "contract": a,
-                    "name": md.get("name") or "SPL Token",
-                    "symbol": md.get("symbol") or "",
-                    "decimals": dec,
-                    "total_supply": raw / (10**dec if dec else 1),
-                    "top_accounts": rows[:20],
-                    "holders": rows,
-                    "total_holders": total,
-                    "note": "Real token accounts from Alchemy getTokenAccounts."
-                }
-        except Exception as e:
-            last = str(e)
+                supply=await rpc(s,u,"getTokenSupply",[a])
+                asset=await rpc(s,u,"getAsset",[a,{"displayOptions":{"showFungible":True}}])
+            if supply is None:continue
+            v=(supply or {}).get("value",{});d=int(v.get("decimals",0));raw=int(v.get("amount","0"))
+            content=((asset or {}).get("content") or {})
+            md=(content.get("metadata") or {})
+            ti=(asset or {}).get("token_info") or {}
+            name=md.get("name") or ti.get("name") or (asset or {}).get("name") or "SPL Token"
+            symbol=md.get("symbol") or ti.get("symbol") or (asset or {}).get("symbol") or ""
+            decimals=ti.get("decimals")
+            if decimals is not None:
+                try:d=int(decimals)
+                except:pass
+            return {"family":"solana","chain":"Solana","contract":a,"name":name,"symbol":symbol,"decimals":d,"total_supply":raw/(10**d if d else 1)}
+        except Exception as e:last=str(e)
     raise RuntimeError(last)
 
 
-SUI_RPC = "https://fullnode.mainnet.sui.io:443"
-
-
-async def sui_rpc(method, params):
+async def solana_all_holders(a):
+    key=os.getenv("ALCHEMY_API_KEY","").strip()
+    if not key:raise RuntimeError("ALCHEMY_API_KEY is required for full Solana holder indexing.")
+    url=f"https://solana-mainnet.g.alchemy.com/v2/{key}";owners={};cursor=None;token_accounts=0;total_accounts=None
     async with aiohttp.ClientSession() as s:
-        return await rpc(s, SUI_RPC, method, params)
+        for _ in range(1000):
+            params={"mintAddress":a,"limit":1000,"options":{"showZeroBalance":False}}
+            if cursor:params["cursor"]=cursor
+            d=await rpc(s,url,"getTokenAccounts",[params])
+            if not isinstance(d,dict):
+                raise RuntimeError("Alchemy Solana DAS returned no token-account data for this mint.")
+            rows=d.get("token_accounts") or d.get("tokenAccounts") or []
+            total_accounts=d.get("total",total_accounts)
+            token_accounts+=len(rows)
+            for x in rows:
+                # Alchemy DAS returns owner/amount at the token-account record level.
+                owner=x.get("owner") or ((x.get("account") or {}).get("owner"))
+                amount=x.get("amount")
+                if amount is None:
+                    info=((x.get("account") or {}).get("data") or {}).get("parsed",{}).get("info",{})
+                    owner=owner or info.get("owner")
+                    amount=(info.get("tokenAmount") or {}).get("amount")
+                if owner:
+                    try:amt=int(amount or 0)
+                    except:amt=0
+                    if amt>0:owners[owner]=owners.get(owner,0)+amt
+            cursor=d.get("cursor") or d.get("paginationKey")
+            if not cursor or not rows:break
+            if token_accounts>=300000:raise RuntimeError("Solana token has more than 300,000 token accounts; holder scan safety limit reached.")
+    items=[{"address":o,"raw":v,"value":str(v)} for o,v in owners.items() if v>0]
+    items.sort(key=lambda x:x["raw"],reverse=True)
+    return {"items":items,"total":len(items),"source":"Alchemy Solana DAS (unique wallet owners)","token_accounts":token_accounts,"indexed_token_accounts":total_accounts,"page_size":10}
 
+
+SUI_RPC="https://fullnode.mainnet.sui.io:443"
+async def sui_rpc(method,params):
+    async with aiohttp.ClientSession() as s:return await rpc(s,SUI_RPC,method,params)
 
 async def sui_resolve_coin_type(a):
-    if "::" in a:
-        return a
-    obj = await sui_rpc("sui_getObject", [a, {"showType": True, "showContent": True, "showOwner": True}])
-    typ = ((obj or {}).get("data") or {}).get("type") or ""
-    m = re.search(r"(?:0x2::coin::Coin|0x2::coin::CoinMetadata)<(.+)>$", typ)
-    if m:
-        return m.group(1)
-    raise RuntimeError("That Sui address is an object ID, not a coin type. Send the full coin type, e.g. 0x...::module::TOKEN.")
-
+    if "::" in a:return a
+    obj=await sui_rpc("sui_getObject",[a,{"showType":True,"showContent":True,"showOwner":True}]);typ=((obj or {}).get("data") or {}).get("type") or ""
+    m=re.search(r"(?:0x2::coin::Coin|0x2::coin::CoinMetadata)<(.+)>$",typ)
+    if m:return m.group(1)
+    raise RuntimeError("I could not derive a Sui coin type from that object. Send the full coin type.")
 
 async def sui_token(a):
-    coin_type = await sui_resolve_coin_type(a)
-    key = os.getenv("BLOCKVISION_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("BLOCKVISION_API_KEY is not set. Sui metadata requires BlockVision.")
-
-    async with aiohttp.ClientSession() as s:
-        d = await http_json(
-            s, "GET", f"{BLOCKVISION_BASE}/coin/detail",
-            params={"coinType": coin_type},
-            headers={"x-api-key": key, "accept": "application/json"}
-        )
-    if not isinstance(d, dict) or d.get("__http_error__"):
-        raise RuntimeError(f"BlockVision detail failed: {str(d)[:400]}")
-
-    data = d.get("data") or d
-    decimals = int(data.get("decimals") or 0)
-    total_supply_raw = data.get("totalSupply") or data.get("supply") or 0
-    try:
-        total_supply = float(total_supply_raw) / (10 ** decimals) if decimals else float(total_supply_raw)
-    except:
-        total_supply = 0.0
-
-    return {
-        "family": "sui", "chain": "Sui", "contract": coin_type, "input": a,
-        "name": data.get("name") or "Unknown Sui Coin",
-        "symbol": data.get("symbol") or "???",
-        "decimals": decimals,
-        "total_supply": total_supply,
-        "total_holders": data.get("holders") or data.get("holderCount"),
-        "coin_type": coin_type,
-    }
-
+    coin_type=await sui_resolve_coin_type(a);md=await sui_rpc("suix_getCoinMetadata",[coin_type]);sup=await sui_rpc("suix_getTotalSupply",[coin_type])
+    if md is None:raise RuntimeError("Sui RPC could not find coin metadata for that coin type.")
+    d=int((md or {}).get("decimals",0));raw=int(((sup or {}).get("value",0) or 0))
+    return {"family":"sui","chain":"Sui","contract":coin_type,"input":a,"name":md.get("name") or"Unknown Sui Coin","symbol":md.get("symbol") or"???","decimals":d,"total_supply":raw/(10**d if d else 1),"coin_type":coin_type}
 
 async def sui_holders(a):
-    coin_type = await sui_resolve_coin_type(a)
-    key = os.getenv("BLOCKVISION_API_KEY", "").strip()
-    if not key:
-        return {"coin_type": coin_type, "items": [], "total": None, "needs_key": True}
-
-    all_rows = []
-    cursor = None
+    coin_type=await sui_resolve_coin_type(a);key=os.getenv("BLOCKVISION_API_KEY","").strip()
+    if not key:return {"coin_type":coin_type,"items":[],"total":None,"needs_key":True}
+    cursor=None;items=[];total=None
     async with aiohttp.ClientSession() as s:
-        for _ in range(200):
-            params = {"coinType": coin_type, "limit": 50}
-            if cursor:
-                params["cursor"] = cursor
-            d = await http_json(
-                s, "GET", f"{BLOCKVISION_BASE}/coin/holders",
-                params=params,
-                headers={"x-api-key": key, "accept": "application/json"}
-            )
-            if not isinstance(d, dict) or d.get("__http_error__"):
-                break
-            payload = d.get("data") or d
-            rows = payload.get("data") or payload.get("holders") or []
-            all_rows.extend(rows)
-            cursor = payload.get("nextPageCursor") or payload.get("cursor")
-            if not cursor or not rows:
-                break
-
-    items = []
-    for x in all_rows:
-        addr = x.get("address") or x.get("holderAddress") or x.get("owner") or ""
-        if addr:
-            items.append({
-                "address": addr,
-                "value": x.get("quantity") or x.get("balance") or x.get("amount") or "0",
-                "percentage": x.get("percentage"),
-            })
-    return {
-        "coin_type": coin_type,
-        "items": items,
-        "total": len(items) if items else None,
-        "needs_key": False,
-    }
+        for _ in range(2000):
+            params={"coinType":coin_type,"limit":50}
+            if cursor:params["cursor"]=cursor
+            d=await http_json(s,"GET","https://api.blockvision.org/v2/sui/coin/holders",params=params,headers={"x-api-key":key})
+            if not isinstance(d,dict) or d.get("__http_error__"):raise RuntimeError("BlockVision holder API request failed.")
+            rows=d.get("data") or [];total=d.get("total",total)
+            for x in rows:
+                addr=x.get("address") or x.get("holderAddress") or x.get("owner")
+                if addr:items.append({"address":addr,"value":x.get("quantity") or x.get("amount") or x.get("balance") or "0","percent":x.get("percentage")})
+            cursor=d.get("nextPageCursor")
+            if not cursor or not rows:break
+    return {"coin_type":coin_type,"items":items,"total":total if total is not None else len(items),"source":"BlockVision","needs_key":False}
 
 
 async def tron_token(a):
-    h = {}
-    k = os.getenv("TRONGRID_API_KEY", "").strip()
-    if k:
-        h["TRON-PRO-API-KEY"] = k
-    async with aiohttp.ClientSession() as s:
-        d = await http_json(s, "GET", f"https://api.trongrid.io/v1/contracts/{a}", headers=h)
-    x = (d.get("data") or [{}])[0] if d and isinstance(d, dict) else {}
-    return {"family": "tron", "chain": "TRON", "contract": a,
-            "name": x.get("name") or "TRC-20 Contract",
-            "symbol": x.get("symbol") or "???",
-            "note": "TRON metadata is read from TronGrid."}
+    async with aiohttp.ClientSession() as s:d=await http_json(s,"GET","https://api.trongrid.io/v1/trc20/info",params={"contract_list":a})
+    x=(d.get("data") or [{}])[0] if isinstance(d,dict) else {}
+    return {"family":"tron","chain":"TRON","contract":a,"name":x.get("name") or"TRC-20 Token","symbol":x.get("symbol") or"???","decimals":x.get("decimals"),"total_supply":x.get("total_supply"),"holder_count":x.get("holders") or x.get("holder_count")}
+
+async def tron_holder_page(a,offset):
+    async with aiohttp.ClientSession() as s:d=await http_json(s,"GET","https://apilist.tronscanapi.com/api/tokenholders",params={"address":a,"start":offset,"limit":10,"sort":"-balance"})
+    if not isinstance(d,dict) or d.get("__http_error__"):raise RuntimeError("TronScan holder index did not accept the public request. No extra API key is configured.")
+    rows=d.get("data") or [];total=d.get("rangeTotal") or d.get("total") or 0
+    items=[{"address":x.get("address"),"value":x.get("balance") or x.get("quantity") or x.get("amount") or "0","percent":x.get("percent") or x.get("tokenRatio")} for x in rows if x.get("address")]
+    return {"items":items,"total":total,"has_next":offset+len(items)<total}
+
+async def tron_holders(a):
+    return await tron_holder_page(a,0)
 
 
 async def ton_token(a):
-    h = {}
-    k = os.getenv("TONCENTER_API_KEY", "").strip()
-    if k:
-        h["X-API-Key"] = k
+    async with aiohttp.ClientSession() as s:d=await http_json(s,"GET",f"https://tonapi.io/v2/jettons/{a}")
+    if not isinstance(d,dict) or d.get("__http_error__"):raise RuntimeError("TONAPI could not find that Jetton.")
+    md=d.get("metadata") or {}
+    return {"family":"ton","chain":"TON","contract":a,"name":md.get("name") or d.get("name") or"Jetton","symbol":md.get("symbol") or d.get("symbol") or"???","decimals":d.get("decimals"),"total_supply":d.get("total_supply") or d.get("totalSupply")}
+
+async def ton_all_holders(a):
+    items=[];last=None
     async with aiohttp.ClientSession() as s:
-        d = await http_json(s, "GET", "https://toncenter.com/api/v3/jetton/masters",
-                            params={"jetton_address": a, "limit": 1}, headers=h)
-    x = (d.get("jetton_masters") or [{}])[0] if d and isinstance(d, dict) else {}
-    cc = x.get("jetton_content") or {}
-    return {"family": "ton", "chain": "TON", "contract": a,
-            "name": cc.get("name") or x.get("name") or "Jetton",
-            "symbol": cc.get("symbol") or x.get("symbol") or "???",
-            "decimals": x.get("decimals"),
-            "total_supply": x.get("total_supply"),
-            "note": "TON Jetton metadata is read from TON Center."}
+        for _ in range(5000):
+            params={"limit":50,"sort_by":"address"}
+            if last:params["last_account_id"]=last
+            d=await http_json(s,"GET",f"https://tonapi.io/v2/jettons/{a}/holders",params=params)
+            if not isinstance(d,dict) or d.get("__http_error__"):raise RuntimeError("TONAPI holder lookup failed.")
+            rows=d.get("addresses") or d.get("holders") or []
+            for x in rows:
+                addr=x.get("address") if isinstance(x,dict) else None
+                if addr:items.append({"address":addr,"value":x.get("balance") or x.get("amount") or "0","percent":x.get("percentage")})
+            if not rows or len(rows)<50:break
+            last=rows[-1].get("address")
+            if len(items)>=100000:raise RuntimeError("TON holder safety limit reached at 100,000 holders.")
+    return {"items":items,"total":len(items),"source":"TONAPI","page_size":10}
 
 
 async def analyze_address(a):
-    a = a.strip()
-    f = detect_address_family(a)
-    if f == "evm":
-        m = await detect_evm(a)
-        if not m:
-            raise RuntimeError("No supported EVM deployment was detected.")
-        return {"family": "evm", "matches": [await evm_token(a, c) for c in m]}
-    if f == "solana":
-        return await solana_token(a)
-    if f == "sui":
-        return await sui_token(a)
-    if f == "tron":
-        return await tron_token(a)
-    if f == "ton":
-        return await ton_token(a)
+    a=a.strip();f=detect_address_family(a)
+    if f=="evm":
+        m=await detect_evm(a)
+        if not m:raise RuntimeError("No supported EVM deployment was detected.")
+        return {"family":"evm","matches":[await evm_token(a,c) for c in m]}
+    if f=="solana":return await solana_token(a)
+    if f=="sui":return await sui_token(a)
+    if f=="tron":return await tron_token(a)
+    if f=="ton":return await ton_token(a)
     raise RuntimeError("Address format not recognized.")
 
 
-async def market_data(slug, a):
-    try:
+async def wallet_details(family,address,chain=None):
+    if family=="evm":
+        cid=chain["chain_id"];_,_,alchemy,public=EVM_CHAINS[cid];key=os.getenv("ALCHEMY_API_KEY","").strip();urls=([alchemy.format(key=key)] if alchemy and key else[])+([public] if public else[])
         async with aiohttp.ClientSession() as s:
-            return await http_json(s, "GET", f"https://api.dexscreener.com/tokens/v1/{slug}/{a}") or []
-    except:
-        return []
+            for u in urls:
+                bal=await rpc(s,u,"eth_getBalance",[address,"latest"]);nonce=await rpc(s,u,"eth_getTransactionCount",[address,"latest"]);code=await rpc(s,u,"eth_getCode",[address,"latest"])
+                if bal is not None:return {"type":"Contract" if code and code!="0x" else "Wallet/EOA","native":int(bal,16)/1e18,"tx_count":int(nonce,16),"chain":chain["name"]}
+    if family=="solana":
+        key=os.getenv("ALCHEMY_API_KEY","").strip();u=f"https://solana-mainnet.g.alchemy.com/v2/{key}" if key else"https://api.mainnet-beta.solana.com"
+        async with aiohttp.ClientSession() as s:
+            bal=await rpc(s,u,"getBalance",[address]);tx=await rpc(s,u,"getSignaturesForAddress",[address,{"limit":1}])
+        return {"type":"Solana account","native":((bal or {}).get("value",0))/1e9,"recent_activity":len(tx or [])}
+    if family=="sui":
+        b=await sui_rpc("suix_getBalance",[address]);return {"type":"Sui address","native":int((b or {}).get("totalBalance",0))/1e9}
+    if family=="ton":
+        async with aiohttp.ClientSession() as s:d=await http_json(s,"GET",f"https://tonapi.io/v2/accounts/{address}")
+        return {"type":"TON account","native":(d or {}).get("balance",0)/1e9}
+    if family=="tron":
+        async with aiohttp.ClientSession() as s:d=await http_json(s,"GET",f"https://api.trongrid.io/v1/accounts/{address}")
+        x=(d.get("data") or [{}])[0] if isinstance(d,dict) else {};return {"type":"TRON account","native":x.get("balance",0)/1e6,"tx_count":x.get("transactions",0)}
+    return {}
+
+
+async def market_data(slug,a):
+    try:
+        async with aiohttp.ClientSession() as s:return await http_json(s,"GET",f"https://api.dexscreener.com/tokens/v1/{slug}/{a}") or []
+    except:return []
