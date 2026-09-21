@@ -238,204 +238,194 @@ async def evm_holder_next(a,c,cursor):
     return d
 
 
+async def solana_rpc_call(s, url, method, params):
+    """Solana RPC wrapper with explicit error handling and provider fallback.
+
+    This is intentionally isolated from EVM RPCs.  Robinhood/EVM routing is
+    not involved here.
+    """
+    d=await http_json(s,"POST",url,json={"jsonrpc":"2.0","id":1,"method":method,"params":params})
+    if not isinstance(d,dict):
+        return None
+    if d.get("error"):
+        return None
+    return d.get("result")
+
+
+def solana_rpc_urls():
+    key=os.getenv("ALCHEMY_API_KEY","").strip()
+    urls=[]
+    if key:
+        urls.append(f"https://solana-mainnet.g.alchemy.com/v2/{key}")
+    # Public RPC fallbacks are used only for ordinary Solana RPC calls. DAS
+    # holder indexing remains Alchemy-backed below.
+    urls += [
+        "https://api.mainnet-beta.solana.com",
+        "https://solana-rpc.publicnode.com",
+    ]
+    return urls
+
+
 async def solana_token(a):
-    key=os.getenv("ALCHEMY_API_KEY","").strip();urls=([f"https://solana-mainnet.g.alchemy.com/v2/{key}"] if key else[])+["https://api.mainnet-beta.solana.com"]
+    """Analyze an SPL mint without changing the EVM analysis path."""
     last="Solana RPC unavailable"
-    for u in urls:
+    for u in solana_rpc_urls():
         try:
-            async with aiohttp.ClientSession() as s:
-                supply=await rpc(s,u,"getTokenSupply",[a])
-                asset=await rpc(s,u,"getAsset",[a,{"displayOptions":{"showFungible":True}}])
-            if supply is None:continue
-            v=(supply or {}).get("value",{});d=int(v.get("decimals",0));raw=int(v.get("amount","0"))
-            content=((asset or {}).get("content") or {})
-            md=(content.get("metadata") or {})
-            ti=(asset or {}).get("token_info") or {}
-            name=md.get("name") or ti.get("name") or (asset or {}).get("name") or ""
-            symbol=md.get("symbol") or ti.get("symbol") or (asset or {}).get("symbol") or ""
-            # Some SPL assets expose the canonical metadata only through json_uri.
-            if (not name or not symbol) and isinstance(content,dict) and content.get("json_uri"):
-                try:
-                    async with aiohttp.ClientSession() as ms:
-                        meta=await http_json(ms,"GET",content["json_uri"])
-                    if isinstance(meta,dict):
-                        name=name or meta.get("name") or ""
-                        symbol=symbol or meta.get("symbol") or ""
-                except Exception:
-                    pass
-            name=name or "SPL Token"
-            decimals=ti.get("decimals")
-            if decimals is not None:
-                try:d=int(decimals)
-                except:pass
-            return {"family":"solana","chain":"Solana","contract":a,"name":name,"symbol":symbol,"decimals":d,"total_supply":raw/(10**d if d else 1)}
-        except Exception as e:last=str(e)
-    raise RuntimeError(last)
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s:
+                # getTokenSupply is standard Solana JSON-RPC and is the only
+                # required call for a valid SPL mint/supply result.
+                supply=await solana_rpc_call(s,u,"getTokenSupply",[a])
+                if not isinstance(supply,dict):
+                    continue
+                v=supply.get("value") or {}
+                d=int(v.get("decimals",0) or 0)
+                raw=int(v.get("amount","0") or 0)
+
+                # Metadata is optional: Alchemy DAS gives richer metadata, but
+                # failure to retrieve it must never turn a valid mint into an
+                # "RPC unavailable" error.
+                asset=None
+                if u.startswith("https://solana-mainnet.g.alchemy.com/"):
+                    asset=await solana_rpc_call(s,u,"getAsset",[a,{"displayOptions":{"showFungible":True}}])
+
+                content=((asset or {}).get("content") or {})
+                md=(content.get("metadata") or {})
+                ti=(asset or {}).get("token_info") or {}
+                name=md.get("name") or ti.get("name") or (asset or {}).get("name") or ""
+                symbol=md.get("symbol") or ti.get("symbol") or (asset or {}).get("symbol") or ""
+                if (not name or not symbol) and content.get("json_uri"):
+                    try:
+                        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as ms:
+                            meta=await http_json(ms,"GET",content["json_uri"])
+                        if isinstance(meta,dict):
+                            name=name or meta.get("name") or ""
+                            symbol=symbol or meta.get("symbol") or ""
+                    except Exception:
+                        pass
+                return {
+                    "family":"solana","chain":"Solana","contract":a,
+                    "name":name or "SPL Token","symbol":symbol or "???",
+                    "decimals":d,"total_supply":raw/(10**d if d else 1)
+                }
+        except Exception as e:
+            last=str(e)
+    raise RuntimeError(last if last else "Solana RPC unavailable")
 
 
 async def solana_token_account_page(owner,mint):
     key=os.getenv("ALCHEMY_API_KEY","").strip()
-    if not key:
-        raise RuntimeError("ALCHEMY_API_KEY is required for Solana token-account details.")
-    url=f"https://solana-mainnet.g.alchemy.com/v2/{key}"
-    async with aiohttp.ClientSession() as s:
-        d=await rpc(s,url,"getTokenAccountsByOwner",[owner,{"mint":mint},{"encoding":"jsonParsed"}])
-    if not isinstance(d,list): return []
-    out=[]
-    for x in d:
-        info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
-        ta=info.get("tokenAmount") or {}; amt=ta.get("amount")
-        if amt is None: continue
-        try: raw=int(amt)
-        except: raw=0
-        if raw<=0: continue
-        out.append({"address":x.get("pubkey"),"raw":raw,"decimals":ta.get("decimals"),"value":ta.get("uiAmountString") or str(raw)})
-    return out
+    urls=solana_rpc_urls()
+    for u in urls:
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s:
+                d=await solana_rpc_call(s,u,"getTokenAccountsByOwner",[owner,{"mint":mint},{"encoding":"jsonParsed"}])
+            if not isinstance(d,list):
+                continue
+            out=[]
+            for x in d:
+                info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
+                ta=info.get("tokenAmount") or {}
+                try: raw=int(ta.get("amount") or 0)
+                except: raw=0
+                if raw<=0: continue
+                out.append({"address":x.get("pubkey"),"raw":raw,"decimals":ta.get("decimals"),"value":ta.get("uiAmountString") or str(raw)})
+            return out
+        except Exception:
+            continue
+    return []
+
 
 async def solana_all_holders(a):
-    # SOLANA HOLDERS ONLY. Build unique wallet owners from every non-zero
-    # token account for this mint. This does not affect Solana /analyze.
+    """Return unique wallet owners for a Solana mint.
+
+    Primary source: Alchemy DAS getTokenAccounts.
+    Fallback: standard Solana getProgramAccounts for both SPL Token and
+    Token-2022 programs.  No Blockscout key is involved.
+    """
     key=os.getenv("ALCHEMY_API_KEY","").strip()
     if not key:
         raise RuntimeError("ALCHEMY_API_KEY is required for full Solana holder indexing.")
-    url=f"https://solana-mainnet.g.alchemy.com/v2/{key}"
-    owners={}
-    token_accounts=0
+    alchemy=f"https://solana-mainnet.g.alchemy.com/v2/{key}"
+    owners={}; token_accounts=0
 
-    def add_das_rows(rows):
+    def add_rows(rows):
         nonlocal token_accounts
-        added=False
         for x in rows or []:
-            if not isinstance(x,dict):
-                continue
-            # DAS getTokenAccounts normally exposes owner/amount directly.
-            owner=x.get("owner")
-            amount=x.get("amount")
-            # Be defensive about alternate indexed response shapes.
+            if not isinstance(x,dict): continue
+            owner=x.get("owner"); amount=x.get("amount")
             acct=x.get("account") or {}
-            if not owner:
-                owner=acct.get("owner")
             data=acct.get("data") or {}
             parsed=data.get("parsed") or {}
             info=parsed.get("info") or {}
-            owner=owner or info.get("owner")
-            if amount is None:
-                amount=(info.get("tokenAmount") or {}).get("amount")
-            if amount is None:
-                amount=x.get("tokenAmount")
-                if isinstance(amount,dict):
-                    amount=amount.get("amount")
-            if not owner or amount is None:
-                continue
-            try: raw=int(amount)
-            except Exception: raw=0
-            if raw<=0:
-                continue
-            owners[owner]=owners.get(owner,0)+raw
-            token_accounts+=1
-            added=True
-        return added
+            owner=owner or acct.get("owner") or info.get("owner")
+            if amount is None: amount=(info.get("tokenAmount") or {}).get("amount")
+            if amount is None and isinstance(x.get("tokenAmount"),dict): amount=x["tokenAmount"].get("amount")
+            try: raw=int(amount or 0)
+            except: raw=0
+            if owner and raw>0:
+                owners[owner]=owners.get(owner,0)+raw
+                token_accounts+=1
 
     async def scan_das(s):
-        # Alchemy documents getTokenAccounts with page-based pagination.
-        # Its result is {total, limit, page, cursor, token_accounts}.
-        page=1
-        saw_any=False
+        cursor=None
+        saw=False
         for _ in range(10000):
-            params={"mintAddress":a,"page":page,"limit":1000,"options":{"showZeroBalance":False}}
-            d=await rpc(s,url,"getTokenAccounts",params)
-            if not isinstance(d,dict):
-                return False
+            params={"mintAddress":a,"limit":1000,"options":{"showZeroBalance":False}}
+            if cursor: params["cursor"]=cursor
+            else: params["page"]=1
+            d=await solana_rpc_call(s,alchemy,"getTokenAccounts",params)
+            if not isinstance(d,dict): return saw
             rows=d.get("token_accounts") or d.get("tokenAccounts") or []
-            if not isinstance(rows,list):
-                rows=[]
-            if rows:
-                saw_any=True
-                add_das_rows(rows)
-            # Prefer the API's cursor when present; if cursor is present we
-            # restart this scan using cursor mode because Alchemy allows either
-            # pagination mode, not both at once.
+            if isinstance(rows,list) and rows:
+                saw=True; add_rows(rows)
             cursor=d.get("cursor")
-            if cursor:
-                for _ in range(10000):
-                    params={"mintAddress":a,"cursor":cursor,"limit":1000,"options":{"showZeroBalance":False}}
-                    d2=await rpc(s,url,"getTokenAccounts",params)
-                    if not isinstance(d2,dict):
-                        break
-                    rows2=d2.get("token_accounts") or d2.get("tokenAccounts") or []
-                    if not isinstance(rows2,list) or not rows2:
-                        break
-                    saw_any=True
-                    add_das_rows(rows2)
-                    cursor=d2.get("cursor")
-                    if not cursor:
-                        break
-                return saw_any
-            if not rows or len(rows)<1000:
-                return saw_any
-            page+=1
-        return saw_any
+            if not cursor:
+                return saw
+        return saw
 
-    async def scan_program(s,program):
+    async def scan_program(s,base,program):
         nonlocal token_accounts
-        pagination=None
-        found=False
+        # First use the paginated Alchemy method.
+        cursor=None; found=False
         for _ in range(10000):
-            cfg={"encoding":"jsonParsed","limit":1000,
-                 "filters":[{"memcmp":{"offset":0,"bytes":a}}]}
-            if pagination:
-                cfg["paginationKey"]=pagination
-            d=await rpc(s,url,"getProgramAccountsV2",[program,cfg])
-            if not isinstance(d,dict):
-                return found
-
-            # Alchemy's documented response without withContext is:
-            # result: { accounts: [...], paginationKey: ... }
+            cfg={"encoding":"jsonParsed","limit":1000,"filters":[{"memcmp":{"offset":0,"bytes":a}}]}
+            if cursor: cfg["paginationKey"]=cursor
+            d=await solana_rpc_call(s,alchemy,"getProgramAccountsV2",[program,cfg])
+            if not isinstance(d,dict): break
             rows=d.get("accounts")
-            pagination=d.get("paginationKey")
-            # Also accept the wrapped form in case withContext is enabled by a
-            # future provider response.
+            cursor=d.get("paginationKey")
             if rows is None and isinstance(d.get("value"),dict):
-                v=d["value"]
-                rows=v.get("accounts") or v.get("value") or []
-                pagination=v.get("paginationKey")
-            if rows is None:
-                rows=d.get("value") if isinstance(d.get("value"),list) else []
-
-            if not isinstance(rows,list) or not rows:
-                return found
+                v=d["value"]; rows=v.get("accounts") or v.get("value") or []; cursor=v.get("paginationKey")
+            if not isinstance(rows,list) or not rows: break
             found=True
-            for x in rows:
-                if not isinstance(x,dict):
-                    continue
-                info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
-                owner=info.get("owner")
-                ta=info.get("tokenAmount") or {}
-                try: raw=int(ta.get("amount") or 0)
-                except Exception: raw=0
-                if owner and raw>0:
-                    owners[owner]=owners.get(owner,0)+raw
-                    token_accounts+=1
-            if not pagination:
-                return found
-        return found
+            add_rows(rows)
+            if not cursor: break
+        if found: return True
 
-    async with aiohttp.ClientSession() as s:
-        das_ok=False
+        # Final fallback to ordinary Solana RPC.  This is deliberately a
+        # separate provider path so a DAS outage does not make /holders fail.
+        public="https://api.mainnet-beta.solana.com"
+        cfg={"encoding":"jsonParsed","filters":[{"memcmp":{"offset":0,"bytes":a}}]}
+        d=await solana_rpc_call(s,public,"getProgramAccounts",[program,cfg])
+        if isinstance(d,list) and d:
+            add_rows(d); return True
+        return False
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35)) as s:
         try:
             das_ok=await scan_das(s)
         except Exception:
             das_ok=False
         if not das_ok or not owners:
             owners.clear(); token_accounts=0
-            await scan_program(s,"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
-            await scan_program(s,"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+            await scan_program(s,"SPL","TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            await scan_program(s,"Token-2022","TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
 
     items=[{"address":o,"raw":v,"value":str(v)} for o,v in owners.items() if v>0]
     items.sort(key=lambda x:x["raw"],reverse=True)
     if not items:
-        raise RuntimeError("Alchemy found no non-zero token accounts for this Solana mint. The mint may not be indexed by the configured Alchemy Solana DAS endpoint.")
-    return {"items":items,"total":len(items),"source":"Alchemy Solana token accounts (unique wallet owners)","token_accounts":token_accounts,"page_size":10}
+        raise RuntimeError("No non-zero Solana token accounts were found for this mint.")
+    return {"items":items,"total":len(items),"source":"Solana token accounts (unique wallet owners)","token_accounts":token_accounts,"page_size":10}
 
 
 async def evm_market_data(slug,a):
