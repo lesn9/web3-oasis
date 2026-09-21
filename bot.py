@@ -197,8 +197,11 @@ async def holders_cmd(u, c):
 
 def holder_text(sid):
     s = SESSIONS.get(sid)
-    if not s: return None
-    page = s['page']; start = page * 10; end = min(start + 10, len(s['items']))
+    if not s:
+        return None
+    page = s['page']
+    start = page * 10
+    end = min(start + 10, len(s['items']))
     visible = s['items'][start:end]
     total = s.get('total')
 
@@ -206,4 +209,133 @@ def holder_text(sid):
         title = f"🪙 {html.escape(s['symbol'] or 'Token')}"
         chain = html.escape(s['chain']['name'])
     elif s['family'] == 'solana':
-        title = f"🪙 {html.escape(s.get('symbol') or 'SPL Token')
+        title = f"🪙 {html.escape(s.get('symbol') or 'SPL Token')}"
+        chain = "Solana"
+    else:
+        title = "🪙 Sui Coin"
+        chain = "Sui"
+
+    t = (
+        "👥 <b>Web3 Oasis — Holder Intelligence</b>\n\n"
+        f"{title}\n⛓️ {chain}\n"
+        f"📜 <code>{html.escape(s['address'])}</code>\n"
+        f"👥 <b>Total Holders: {total if total is not None else 'not supplied by indexer'}</b>\n"
+        f"📄 <b>Showing {start+1}–{end}</b>\n"
+        f"ℹ️ Source: {html.escape(s['source'])}\n\n"
+    )
+    for i, x in enumerate(visible, start + 1):
+        addr = x['address']
+        value = x.get('value', '0')
+        t += f"<b>{i}.</b> <code>{html.escape(addr)}</code> — {value}\n"
+        if s['family'] == 'solana' and x.get('owner'):
+            t += f"   └ owner: <code>{html.escape(x['owner'])}</code>\n"
+    return t, visible, start
+
+
+async def render(target, sid):
+    s = SESSIONS.get(sid)
+    if not s:
+        return
+    rendered = holder_text(sid)
+    if not rendered:
+        return
+    t, visible, start = rendered
+    kb = []
+    for pos, x in enumerate(visible, start):
+        kb.append([InlineKeyboardButton(
+            f"{pos+1}. {short_address(x['address'], 8, 6)}",
+            callback_data=f"ha:{sid}:{pos}"
+        )])
+    nav = []
+    if s['page'] > 0:
+        nav.append(InlineKeyboardButton('⬅️ Previous', callback_data=f'hp:{sid}'))
+    if (s['page'] + 1) * 10 < len(s['items']):
+        nav.append(InlineKeyboardButton('Next ➡️', callback_data=f'hn:{sid}'))
+    if nav:
+        kb.append(nav)
+    kb.append([InlineKeyboardButton('🔄 Refresh', callback_data=f'hr:{sid}')])
+    markup = InlineKeyboardMarkup(kb)
+    if isinstance(target, Update):
+        await target.message.reply_text(t, parse_mode='HTML', reply_markup=markup, disable_web_page_preview=True)
+    else:
+        await target.edit_message_text(t, parse_mode='HTML', reply_markup=markup, disable_web_page_preview=True)
+
+
+async def cb(u, c):
+    q = u.callback_query
+    await q.answer()
+    parts = q.data.split(':')
+    action, sid = parts[0], parts[1]
+    s = SESSIONS.get(sid)
+    if not s:
+        return await q.edit_message_text('Session expired. Run /holders again.')
+
+    if action == 'ha':
+        i = int(parts[2])
+        if i < len(s['items']):
+            addr = s['items'][i]['address']
+            value = s['items'][i].get('value', '0')
+            owner = s['items'][i].get('owner')
+            msg = f"📋 <b>Full holder address</b>\n\n<code>{html.escape(addr)}</code>\n\n"
+            if owner:
+                msg += f"Owner: <code>{html.escape(owner)}</code>\n"
+            msg += f"Balance: <code>{html.escape(str(value))}</code>\n\nTap and hold the address to copy it."
+            await q.message.reply_text(msg, parse_mode='HTML')
+        return
+
+    if action == 'hn':
+        if (s['page'] + 1) * 10 < len(s['items']):
+            s['page'] += 1
+        else:
+            return await q.answer('No more holders.', show_alert=True)
+    elif action == 'hp':
+        if s['page'] > 0:
+            s['page'] -= 1
+        else:
+            return await q.answer('Already on the first page.', show_alert=True)
+    elif action == 'hr':
+        if s['family'] == 'evm':
+            await q.answer('Refreshing holder snapshot…')
+            data = await compute_evm_holders(s['address'], s['chain'])
+            s['items'] = data['items']
+            s['total'] = data['total']
+            s['page'] = 0
+        elif s['family'] == 'solana':
+            await q.answer('Refreshing…')
+            r = await analyze_address(s['address'])
+            s['items'] = r.get('holders') or []
+            s['total'] = r.get('total_holders')
+            s['page'] = 0
+        else:
+            await q.answer('Refreshing…')
+            data = await sui_holders(s['address'])
+            s['items'] = data.get('items', [])
+            s['total'] = data.get('total')
+            s['page'] = 0
+    await render(q, sid)
+
+
+async def risk(u, c):
+    await u.message.reply_text('🛡️ Risk scoring is not being faked with a placeholder score. Current build exposes token and holder intelligence.')
+
+
+async def report(u, c):
+    await analyze_cmd(u, c)
+
+
+def main():
+    token = os.getenv('TELEGRAM_BOT_TOKEN', '').strip()
+    if not token:
+        raise RuntimeError('TELEGRAM_BOT_TOKEN is not configured.')
+    app = Application.builder().token(token).build()
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('analyze', analyze_cmd))
+    app.add_handler(CommandHandler('holders', holders_cmd))
+    app.add_handler(CommandHandler('risk', risk))
+    app.add_handler(CommandHandler('report', report))
+    app.add_handler(CallbackQueryHandler(cb, pattern=r'^(ha|hn|hp|hr):'))
+    app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == '__main__':
+    main()
