@@ -302,24 +302,23 @@ async def solana_all_holders(a):
 
     async def scan_das(s):
         nonlocal token_accounts
+        # Alchemy documents page-based pagination for getTokenAccounts. Use
+        # one pagination mode only so pages cannot be skipped or duplicated.
         page=1
         saw_rows=False
         for _ in range(10000):
             params={"mintAddress":a,"page":page,"limit":1000,"options":{"showZeroBalance":False}}
-            d=await rpc(s,url,"getTokenAccounts",[params])
+            d=await rpc(s,url,"getTokenAccounts",params)
             if not isinstance(d,dict):
                 return False
-
             rows=d.get("token_accounts") or d.get("tokenAccounts") or []
             if not isinstance(rows,list):
                 rows=[]
             if not rows:
                 return saw_rows
             saw_rows=True
-
             for x in rows:
-                if not isinstance(x,dict):
-                    continue
+                if not isinstance(x,dict): continue
                 owner=x.get("owner")
                 amount=x.get("amount")
                 if owner is None or amount is None:
@@ -330,47 +329,14 @@ async def solana_all_holders(a):
                     owner=owner or info.get("owner")
                     if amount is None:
                         amount=(info.get("tokenAmount") or {}).get("amount")
-                if not owner:
-                    continue
+                if not owner: continue
                 try: amt=int(amount or 0)
                 except: amt=0
                 if amt>0:
                     owners[owner]=owners.get(owner,0)+amt
                     token_accounts+=1
-
-            total=d.get("total")
-            cursor=d.get("cursor") or d.get("next") or d.get("nextCursor")
-            # Alchemy supports both page and cursor pagination. Keep walking
-            # until the API explicitly tells us there is no next page/cursor.
-            if cursor:
-                # The endpoint accepts cursor pagination instead of page.
-                for _c in range(9999):
-                    params={"mintAddress":a,"cursor":cursor,"limit":1000,"options":{"showZeroBalance":False}}
-                    d2=await rpc(s,url,"getTokenAccounts",[params])
-                    if not isinstance(d2,dict): return bool(owners)
-                    rows2=d2.get("token_accounts") or d2.get("tokenAccounts") or []
-                    if not isinstance(rows2,list) or not rows2: return bool(owners)
-                    for x in rows2:
-                        if not isinstance(x,dict): continue
-                        owner=x.get("owner"); amount=x.get("amount")
-                        if owner is None or amount is None:
-                            info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
-                            owner=owner or info.get("owner")
-                            if amount is None: amount=(info.get("tokenAmount") or {}).get("amount")
-                        if owner:
-                            try: amt=int(amount or 0)
-                            except: amt=0
-                            if amt>0: owners[owner]=owners.get(owner,0)+amt; token_accounts+=1
-                    cursor=d2.get("cursor") or d2.get("next") or d2.get("nextCursor")
-                    if not cursor:return bool(owners)
-                return bool(owners)
-            if total is not None:
-                try:
-                    if page*1000>=int(total): return bool(owners)
-                except: pass
-            if len(rows)<1000: return bool(owners)
             page+=1
-        return bool(owners)
+        return saw_rows
 
     async def scan_program(s,program):
         nonlocal token_accounts
@@ -414,36 +380,36 @@ async def solana_all_holders(a):
 
 
 async def evm_market_data(slug,a):
-    # EVM market data only. This is deliberately isolated from ALL holder code.
-    # First use the existing chain-specific lookup, then DexScreener's generic
-    # token endpoint, then its search endpoint as a final indexed-pair fallback.
-    markets=await market_data(slug,a)
-    if markets:
-        return markets
+    # EVM market data ONLY. Holder code is deliberately not involved here.
     try:
         async with aiohttp.ClientSession() as s:
             candidates=[]
-            for endpoint in (
+            endpoints=[
                 f"https://api.dexscreener.com/latest/dex/tokens/{a}",
-                f"https://api.dexscreener.com/latest/dex/search"
-            ):
-                if endpoint.endswith('/search'):
-                    d=await http_json(s,"GET",endpoint,params={"q":a})
-                else:
-                    d=await http_json(s,"GET",endpoint)
+                f"https://api.dexscreener.com/token-pairs/v1/{slug}/{a}",
+                f"https://api.dexscreener.com/tokens/v1/{slug}/{a}",
+            ]
+            for endpoint in endpoints:
+                d=await http_json(s,"GET",endpoint)
                 if isinstance(d,dict) and isinstance(d.get("pairs"),list):
                     candidates.extend(d["pairs"])
-            # Exact token-address + chain matching prevents a pair from another
-            # EVM chain from being displayed for the Robinhood contract.
-            exact=[]; chain=[]
-            for p in candidates:
-                if not isinstance(p,dict): continue
-                if str(p.get("chainId") or "").lower()!=str(slug).lower(): continue
-                chain.append(p)
-                bt=(p.get("baseToken") or {}).get("address")
-                qt=(p.get("quoteToken") or {}).get("address")
-                if str(bt).lower()==a.lower() or str(qt).lower()==a.lower(): exact.append(p)
-            return exact or chain
+                elif isinstance(d,list):
+                    candidates.extend(d)
+            d=await http_json(s,"GET","https://api.dexscreener.com/latest/dex/search",params={"q":a})
+            if isinstance(d,dict) and isinstance(d.get("pairs"),list):
+                candidates.extend(d["pairs"])
+            exact=[]; seen=set()
+            for pair in candidates:
+                if not isinstance(pair,dict): continue
+                if str(pair.get("chainId") or "").lower()!=str(slug).lower(): continue
+                bt=str((pair.get("baseToken") or {}).get("address") or "").lower()
+                qt=str((pair.get("quoteToken") or {}).get("address") or "").lower()
+                if bt==a.lower() or qt==a.lower():
+                    key=str(pair.get("pairAddress") or pair.get("url") or id(pair))
+                    if key not in seen:
+                        seen.add(key); exact.append(pair)
+            exact.sort(key=lambda pair: float(((pair.get("liquidity") or {}).get("usd")) or 0), reverse=True)
+            return exact
     except Exception:
         return []
 
