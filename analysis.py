@@ -159,7 +159,7 @@ def normalize_blockscout_holder(x):
     return {"address":addr,"raw":raw_int,"value":x.get("value_formatted") or x.get("balance_formatted") or str(raw_int),"percent":x.get("percentage") or x.get("percent")}
 
 
-async def blockscout_holders(a,c,cursor=None,limit=10):
+async def blockscout_holders(a,c,cursor=None,limit=50):
     params=dict(cursor or {})
     params.setdefault("items_count", limit)
     d=await blockscout_request(c["chain_id"],f"/tokens/{a}/holders",params)
@@ -173,10 +173,14 @@ async def blockscout_holders(a,c,cursor=None,limit=10):
 
 
 async def blockscout_holder_count(a,c):
+    # Blockscout's counters response is not consistent across hosted instances.
+    # Prefer an explicit holder count when the endpoint supplies one, otherwise
+    # evm_holders() derives the exact count by walking the paginated holder index.
     d=await blockscout_request(c["chain_id"],f"/tokens/{a}/counters")
     if not isinstance(d,dict) or d.get("__http_error__"):return None
     candidates=[d.get("token_holders"),d.get("holders"),d.get("holder_count"),d.get("holders_count"),d.get("count")]
-    if isinstance(d.get("data"),dict):candidates += [d["data"].get("token_holders"),d["data"].get("holders"),d["data"].get("count")]
+    if isinstance(d.get("data"),dict):
+        candidates += [d["data"].get("token_holders"),d["data"].get("holders"),d["data"].get("holder_count"),d["data"].get("count")]
     for x in candidates:
         try:
             if x is not None:return int(x)
@@ -208,14 +212,24 @@ async def cmc_keyless_count(a,platform):
 
 
 async def evm_holders(a,c):
-    total=await blockscout_holder_count(a,c)
-    first=await blockscout_holders(a,c,None,10)
-    if first.get("items"):
-        return {"provider":"blockscout","items":first["items"],"total":total,"next":first.get("next"),"source":"Blockscout","page_size":10}
+    # Keep the approved Robinhood-style UX: the UI displays only 10 holders per
+    # page, while the backend builds the complete indexed holder list so the
+    # displayed total is the actual full count rather than the first page size.
+    items=[];cursor=None
+    for _ in range(200):
+        page=await blockscout_holders(a,c,cursor,50)
+        if page.get("error"):break
+        rows=page.get("items") or []
+        items.extend(rows)
+        cursor=page.get("next")
+        if not cursor or not rows:break
+    if items:
+        return {"provider":"blockscout","items":items,"total":len(items),"next":None,"source":"Blockscout","page_size":10,"has_next":False}
     cmc_items=await cmc_keyless_holders(a,c["slug"])
     if cmc_items:
-        return {"provider":"cmc","items":cmc_items[:10],"total":await cmc_keyless_count(a,c["slug"]),"next":None,"source":"CoinMarketCap keyless","page_size":10,"all_items":cmc_items}
+        return {"provider":"cmc","items":cmc_items,"total":await cmc_keyless_count(a,c["slug"]),"next":None,"source":"CoinMarketCap keyless","page_size":10,"all_items":cmc_items,"has_next":False}
     raise RuntimeError("No indexed holder provider returned data for this EVM token.")
+
 
 
 async def evm_holder_next(a,c,cursor):
@@ -237,8 +251,19 @@ async def solana_token(a):
             content=((asset or {}).get("content") or {})
             md=(content.get("metadata") or {})
             ti=(asset or {}).get("token_info") or {}
-            name=md.get("name") or ti.get("name") or (asset or {}).get("name") or "SPL Token"
+            name=md.get("name") or ti.get("name") or (asset or {}).get("name") or ""
             symbol=md.get("symbol") or ti.get("symbol") or (asset or {}).get("symbol") or ""
+            # Some SPL assets expose the canonical metadata only through json_uri.
+            if (not name or not symbol) and isinstance(content,dict) and content.get("json_uri"):
+                try:
+                    async with aiohttp.ClientSession() as ms:
+                        meta=await http_json(ms,"GET",content["json_uri"])
+                    if isinstance(meta,dict):
+                        name=name or meta.get("name") or ""
+                        symbol=symbol or meta.get("symbol") or ""
+                except Exception:
+                    pass
+            name=name or "SPL Token"
             decimals=ti.get("decimals")
             if decimals is not None:
                 try:d=int(decimals)

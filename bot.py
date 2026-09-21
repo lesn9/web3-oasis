@@ -60,7 +60,32 @@ async def analyze_cmd(u,c):
            f"⛓️ Chain: <b>{html.escape(str(r.get('chain')))}</b>\n📜 Address: <code>{html.escape(a)}</code>\n")
         if r.get('coin_type'):t+=f"🪙 Coin Type: <code>{html.escape(r['coin_type'])}</code>\n"
         if r.get('decimals') is not None:t+=f"🔢 Decimals: {r['decimals']}\n"
-        if r.get('total_supply') is not None:t+=f"💰 Total Supply: {fmt_number(r['total_supply'])}\n"
+        if r.get('total_supply') is not None:
+            symbol=str(r.get('symbol') or '').strip()
+            t+=f"💰 Total Supply: {fmt_number(r['total_supply'])}{(' ' + html.escape(symbol)) if symbol else ''}\n"
+        # Non-EVM chains use the same market-data layer when DexScreener has a
+        # market indexed for that chain. Missing market data never invalidates
+        # the underlying token analysis.
+        market_slug={'solana':'solana','tron':'tron','sui':'sui','ton':'ton'}.get(r.get('family'))
+        if market_slug:
+            markets=await market_data(market_slug,a)
+            t+='\n📊 <b>Market Data</b>\n'
+            if markets:
+                p=markets[0]
+                liq=(p.get('liquidity') or {}).get('usd')
+                base=(p.get('baseToken') or {}).get('symbol','?')
+                quote=(p.get('quoteToken') or {}).get('symbol','?')
+                t+=(f"• Pair: {html.escape(str(base))}/{html.escape(str(quote))}\n"
+                    f"• DEX: {html.escape(str(p.get('dexId','?')))}\n"
+                    f"• Price: ${p.get('priceUsd','?')}\n"
+                    f"• Liquidity: ${liq if liq is not None else '?'}\n"
+                    f"• 24h Volume: ${((p.get('volume') or {}).get('h24')) if (p.get('volume') or {}).get('h24') is not None else '?'}\n"
+                    f"• 24h Change: {((p.get('priceChange') or {}).get('h24')) if (p.get('priceChange') or {}).get('h24') is not None else '?'}%\n")
+                if p.get('marketCap') is not None:t+=f"• Market Cap: ${p.get('marketCap')}\n"
+                if p.get('fdv') is not None:t+=f"• FDV: ${p.get('fdv')}\n"
+                if p.get('url'):t+=f"🔗 {html.escape(str(p['url']))}\n"
+            else:
+                t+='• No indexed DexScreener pair found.\n'
         await m.edit_text(t,parse_mode='HTML',disable_web_page_preview=True)
     except Exception as e:
         await m.edit_text(f'❌ Analysis failed:\n<code>{html.escape(str(e)[:1200])}</code>',parse_mode='HTML')
@@ -72,20 +97,20 @@ async def build_session(a,r):
         matches=r.get('matches',[])
         if len(matches)!=1:raise RuntimeError('This token is detected on multiple supported EVM chains. I need one unambiguous chain for holder data.')
         ch=matches[0];data=await asyncio.wait_for(evm_holders(a,ch),75)
-        return {'family':'evm','address':a,'chain':ch,'symbol':ch.get('symbol') or r.get('symbol',''),'items':data['items'],'page':0,'total':data.get('total'),'source':data['source'],'cursor':data.get('next'),'cursor_history':[None], 'provider':data.get('provider'),'all_items':data.get('all_items')}
+        return {'family':'evm','address':a,'chain':ch,'symbol':ch.get('symbol') or r.get('symbol',''),'items':data['items'],'page':0,'total':data.get('total'),'source':data['source'],'cursor':data.get('next'),'cursor_history':[None], 'provider':data.get('provider'),'all_items':data.get('all_items'),'has_next':data.get('has_next',False)}
     if family=='solana':
         data=await asyncio.wait_for(solana_all_holders(a),150)
-        return {'family':'solana','address':a,'chain':{'name':'Solana'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local'}
+        return {'family':'solana','address':a,'chain':{'name':'Solana'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False}
     if family=='sui':
         data=await asyncio.wait_for(sui_holders(a),75)
         if data.get('needs_key'):raise RuntimeError('Sui holder indexing needs the BLOCKVISION_API_KEY already configured in Railway.')
-        return {'family':'sui','address':a,'coin_type':data['coin_type'],'chain':{'name':'Sui'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local'}
+        return {'family':'sui','address':a,'coin_type':data['coin_type'],'chain':{'name':'Sui'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False}
     if family=='tron':
         data=await asyncio.wait_for(tron_holders(a),45)
-        return {'family':'tron','address':a,'chain':{'name':'TRON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':'TronScan','provider':'offset','offset':0}
+        return {'family':'tron','address':a,'chain':{'name':'TRON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':'TronScan','provider':'offset','offset':0,'has_next':data.get('has_next',False)}
     if family=='ton':
         data=await asyncio.wait_for(ton_all_holders(a),150)
-        return {'family':'ton','address':a,'chain':{'name':'TON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local'}
+        return {'family':'ton','address':a,'chain':{'name':'TON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False}
     raise RuntimeError('Holder intelligence is not available for this address type.')
 
 
@@ -107,11 +132,8 @@ def holder_text(s):
     t=("👥 <b>Web3 Oasis — Holder Intelligence</b>\n\n"
        f"🪙 <b>{html.escape(holder_title(s))}</b>\n⛓️ {html.escape(s['chain']['name'])}\n📜 <code>{html.escape(s['address'])}</code>\n"
        f"👥 <b>Total Holders: {total if total is not None else 'not supplied'}</b>\n"
-       f"📄 <b>Showing {start+1}–{end}</b>\nℹ️ Source: {html.escape(s['source'])}\n\n")
-    for i,x in enumerate(rows,start+1):
-        value=x.get('value','0');pct=x.get('percent')
-        extra=f" • {pct}%" if pct is not None and pct!='' else ''
-        t+=f"<b>{i}.</b> <code>{html.escape(x['address'])}</code> — {html.escape(str(value))}{extra}\n"
+       f"📄 <b>Showing {start+1}–{end}</b>\n"
+       f"ℹ️ Source: {html.escape(s['source'])}")
     return t,rows,start
 
 
@@ -120,10 +142,10 @@ async def render(target,sid):
     if not s:return
     t,rows,start=holder_text(s);kb=[]
     for pos,x in enumerate(rows,start):
-        kb.append([InlineKeyboardButton(f"{pos+1}. {short_address(x['address'],8,6)}",callback_data=f"hd:{sid}:{pos}")])
+        kb.append([InlineKeyboardButton(short_address(x['address'],10,6),callback_data=f"hd:{sid}:{pos}")])
     nav=[]
     if s['page']>0:nav.append(InlineKeyboardButton('⬅️ Previous',callback_data=f"hp:{sid}"))
-    has_next=(s['page']+1)*PAGE_SIZE<len(s['items']) or (s.get('provider') in ('blockscout','offset') and s.get('has_next',True)) or (s.get('provider')=='cmc' and (s['page']+1)*PAGE_SIZE<len(s.get('all_items',[])))
+    has_next=(s['page']+1)*PAGE_SIZE<len(s['items']) or (s.get('provider')=='offset' and s.get('has_next',False)) or (s.get('provider')=='cmc' and (s['page']+1)*PAGE_SIZE<len(s.get('all_items',[])))
     if has_next:nav.append(InlineKeyboardButton('Next ➡️',callback_data=f"hn:{sid}"))
     if nav:kb.append(nav)
     kb.append([InlineKeyboardButton('🔄 Refresh',callback_data=f"hr:{sid}")])
@@ -151,9 +173,9 @@ async def holder_next(s):
             s['page']+=1;return True
         return False
     if s['provider']=='blockscout':
-        data=await evm_holder_next(s['address'],s['chain'],s.get('cursor'))
-        if not data.get('items'):return False
-        s['items'].extend(data['items']);s['cursor_history'].append(s.get('cursor'));s['cursor']=data.get('next');s['page']+=1;return True
+        if (s['page']+1)*PAGE_SIZE<len(s['items']):
+            s['page']+=1;return True
+        return False
     if s['provider']=='offset':
         off=s['offset']+PAGE_SIZE;data=await tron_holder_page(s['address'],off)
         if not data['items']:return False
