@@ -1,962 +1,125 @@
-import os
-import asyncio
-import logging
-from typing import Any
+import os, asyncio, re, aiohttp
 
-import aiohttp
+TIMEOUT=aiohttp.ClientTimeout(total=8)
+EVM_CHAINS={
+1:("Ethereum","ethereum","https://eth-mainnet.g.alchemy.com/v2/{key}","https://eth.llamarpc.com"),
+8453:("Base","base","https://base-mainnet.g.alchemy.com/v2/{key}","https://base.llamarpc.com"),
+42161:("Arbitrum One","arbitrum","https://arb-mainnet.g.alchemy.com/v2/{key}","https://arbitrum.llamarpc.com"),
+10:("Optimism","optimism","https://opt-mainnet.g.alchemy.com/v2/{key}","https://optimism.llamarpc.com"),
+137:("Polygon","polygon","https://polygon-mainnet.g.alchemy.com/v2/{key}","https://polygon.llamarpc.com"),
+56:("BNB Smart Chain","bsc",None,"https://bsc-dataseed.binance.org"),
+43114:("Avalanche C-Chain","avalanche","https://avax-mainnet.g.alchemy.com/v2/{key}","https://api.avax.network/ext/bc/C/rpc"),
+59144:("Linea","linea",None,"https://rpc.linea.build"),324:("zkSync Era","zksync",None,"https://mainnet.era.zksync.io"),534352:("Scroll","scroll",None,"https://rpc.scroll.io"),5000:("Mantle","mantle",None,"https://rpc.mantle.xyz"),81457:("Blast","blast",None,"https://rpc.blast.io"),100:("Gnosis","gnosis",None,"https://rpc.gnosischain.com"),42220:("Celo","celo",None,"https://forno.celo.org"),130:("Unichain","unichain",None,"https://mainnet.unichain.org"),480:("World Chain","worldchain",None,"https://worldchain-mainnet.g.alchemy.com"),1868:("Soneium","soneium",None,"https://rpc.soneium.org"),11011:("Shape","shape",None,"https://mainnet.shape.network"),146:("Sonic","sonic",None,"https://rpc.soniclabs.com"),80094:("Berachain","berachain",None,"https://rpc.berachain.com"),143:("Monad","monad",None,"https://rpc.monad.xyz"),1329:("Sei","sei",None,"https://evm-rpc.sei-apis.com"),7777777:("Zora","zora",None,"https://rpc.zora.energy"),204:("opBNB","opbnb",None,"https://opbnb-mainnet-rpc.bnbchain.org"),1088:("Metis","metis",None,"https://andromeda.metis.io/?owner=1088"),33139:("ApeChain","apechain",None,"https://rpc.apechain.com/http"),34443:("Mode","mode",None,"https://mainnet.mode.network"),1284:("Moonbeam","moonbeam",None,"https://rpc.api.moonbeam.network"),4663:("Robinhood Chain","robinhood",None,"https://rpc.mainnet.chain.robinhood.com"),57073:("Ink","ink",None,"https://rpc-gel.inkonchain.com"),2741:("Abstract","abstract",None,"https://api.mainnet.abs.xyz"),1244:("Arc","arc",None,"https://rpc.arc.network")}
+EVM_RE=re.compile(r'^0x[a-fA-F0-9]{40}$'); SOL_RE=re.compile(r'^[1-9A-HJ-NP-Za-km-z]{32,44}$'); SUI_RE=re.compile(r'^0x[a-fA-F0-9]{64}$'); TRON_RE=re.compile(r'^T[1-9A-HJ-NP-Za-km-z]{33}$'); TON_RE=re.compile(r'^(EQ|UQ)[A-Za-z0-9_-]{46}$')
+SELECTORS={'name':'0x06fdde03','symbol':'0x95d89b41','decimals':'0x313ce567','totalSupply':'0x18160ddd'}
 
-
-logger = logging.getLogger("web3-oasis.analysis")
-
-ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "").strip()
-BLOCKSCOUT_API_KEY = os.getenv("BLOCKSCOUT_API_KEY", "").strip()
-
-
-# ============================================================
-# SUPPORTED CHAINS
-# ============================================================
-
-CHAINS = {
-    "ethereum": {
-        "name": "Ethereum",
-        "chain_id": 1,
-        "native": "ETH",
-        "alchemy": "eth-mainnet",
-        "rpc": "https://eth.llamarpc.com",
-    },
-    "base": {
-        "name": "Base",
-        "chain_id": 8453,
-        "native": "ETH",
-        "alchemy": "base-mainnet",
-        "rpc": "https://mainnet.base.org",
-    },
-    "arbitrum": {
-        "name": "Arbitrum One",
-        "chain_id": 42161,
-        "native": "ETH",
-        "alchemy": "arb-mainnet",
-        "rpc": "https://arb1.arbitrum.io/rpc",
-    },
-    "optimism": {
-        "name": "Optimism",
-        "chain_id": 10,
-        "native": "ETH",
-        "alchemy": "opt-mainnet",
-        "rpc": "https://mainnet.optimism.io",
-    },
-    "polygon": {
-        "name": "Polygon",
-        "chain_id": 137,
-        "native": "POL",
-        "alchemy": "polygon-mainnet",
-        "rpc": "https://polygon-rpc.com",
-    },
-    "bnb": {
-        "name": "BNB Smart Chain",
-        "chain_id": 56,
-        "native": "BNB",
-        "alchemy": None,
-        "rpc": "https://bsc-dataseed.binance.org",
-    },
-    "avalanche": {
-        "name": "Avalanche",
-        "chain_id": 43114,
-        "native": "AVAX",
-        "alchemy": "avax-mainnet",
-        "rpc": "https://api.avax.network/ext/bc/C/rpc",
-    },
-    "linea": {
-        "name": "Linea",
-        "chain_id": 59144,
-        "native": "ETH",
-        "alchemy": "linea-mainnet",
-        "rpc": "https://rpc.linea.build",
-    },
-    "zksync": {
-        "name": "zkSync Era",
-        "chain_id": 324,
-        "native": "ETH",
-        "alchemy": "zksync-mainnet",
-        "rpc": "https://mainnet.era.zksync.io",
-    },
-    "scroll": {
-        "name": "Scroll",
-        "chain_id": 534352,
-        "native": "ETH",
-        "alchemy": "scroll-mainnet",
-        "rpc": "https://rpc.scroll.io",
-    },
-    "mantle": {
-        "name": "Mantle",
-        "chain_id": 5000,
-        "native": "MNT",
-        "alchemy": "mantle-mainnet",
-        "rpc": "https://rpc.mantle.xyz",
-    },
-    "blast": {
-        "name": "Blast",
-        "chain_id": 81457,
-        "native": "ETH",
-        "alchemy": "blast-mainnet",
-        "rpc": "https://rpc.blast.io",
-    },
-    "gnosis": {
-        "name": "Gnosis",
-        "chain_id": 100,
-        "native": "xDAI",
-        "alchemy": None,
-        "rpc": "https://rpc.gnosischain.com",
-    },
-    "celo": {
-        "name": "Celo",
-        "chain_id": 42220,
-        "native": "CELO",
-        "alchemy": None,
-        "rpc": "https://forno.celo.org",
-    },
-    "unichain": {
-        "name": "Unichain",
-        "chain_id": 130,
-        "native": "ETH",
-        "alchemy": "unichain-mainnet",
-        "rpc": "https://mainnet.unichain.org",
-    },
-    "world": {
-        "name": "World Chain",
-        "chain_id": 480,
-        "native": "ETH",
-        "alchemy": "worldchain-mainnet",
-        "rpc": "https://worldchain-mainnet.g.alchemy.com/public",
-    },
-    "soneium": {
-        "name": "Soneium",
-        "chain_id": 1868,
-        "native": "ETH",
-        "alchemy": None,
-        "rpc": "https://rpc.soneium.org",
-    },
-    "shape": {
-        "name": "Shape",
-        "chain_id": 360,
-        "native": "ETH",
-        "alchemy": None,
-        "rpc": "https://mainnet.shape.network",
-    },
-    "sonic": {
-        "name": "Sonic",
-        "chain_id": 146,
-        "native": "S",
-        "alchemy": None,
-        "rpc": "https://rpc.soniclabs.com",
-    },
-    "berachain": {
-        "name": "Berachain",
-        "chain_id": 80094,
-        "native": "BERA",
-        "alchemy": "berachain-mainnet",
-        "rpc": "https://rpc.berachain.com",
-    },
-    "monad": {
-        "name": "Monad",
-        "chain_id": 143,
-        "native": "MON",
-        "alchemy": "monad-mainnet",
-        "rpc": "https://rpc.monad.xyz",
-    },
-    "robinhood": {
-        "name": "Robinhood Chain",
-        "chain_id": 4663,
-        "native": "ETH",
-        "alchemy": "robinhood-mainnet",
-        "rpc": "https://rpc.mainnet.chain.robinhood.com",
-    },
-    "arc": {
-        "name": "Arc",
-        "chain_id": 5042,
-        "native": "USDC",
-        "alchemy": "arc-mainnet",
-        "rpc": "https://rpc.arc.network",
-    },
-    "ink": {
-        "name": "Ink",
-        "chain_id": 57073,
-        "native": "ETH",
-        "alchemy": "ink-mainnet",
-        "rpc": "https://rpc-gel.inkonchain.com",
-    },
-    "abstract": {
-        "name": "Abstract",
-        "chain_id": 2741,
-        "native": "ETH",
-        "alchemy": "abstract-mainnet",
-        "rpc": "https://api.mainnet.abs.xyz",
-    },
-}
-
-
-# ============================================================
-# HTTP HELPERS
-# ============================================================
-
-async def http_get(
-    url: str,
-    params: dict | None = None,
-    timeout: int = 20,
-) -> Any:
+def short_address(a,l=10,r=8): return a if len(a)<=l+r+3 else f'{a[:l]}...{a[-r:]}'
+def fmt_number(v):
+ v=float(v)
+ for d,s in ((1e9,'B'),(1e6,'M'),(1e3,'K')):
+  if abs(v)>=d:return f'{v/d:.2f}{s}'
+ return f'{v:.2f}'
+def detect_address_family(a):
+ if EVM_RE.fullmatch(a):return 'evm'
+ if TRON_RE.fullmatch(a):return 'tron'
+ if TON_RE.fullmatch(a):return 'ton'
+ if SUI_RE.fullmatch(a) or ('::' in a and a.startswith('0x')):return 'sui'
+ if SOL_RE.fullmatch(a):return 'solana'
+ return 'unknown'
+async def http_json(s,method,url,**kw):
+ async with s.request(method,url,timeout=TIMEOUT,**kw) as r:
+  t=await r.text()
+  if r.status>=400: raise RuntimeError(f'HTTP {r.status}: {t[:250]}')
+  return await r.json(content_type=None)
+async def rpc(s,url,method,params):
+ d=await http_json(s,'POST',url,json={'jsonrpc':'2.0','id':1,'method':method,'params':params})
+ if d.get('error'):raise RuntimeError(str(d['error']))
+ return d.get('result')
+async def detect_evm(a):
+ key=os.getenv('ALCHEMY_API_KEY','').strip()
+ async with aiohttp.ClientSession() as s:
+  async def probe(cid,c):
+   name,slug,alchemy,public=c; urls=([alchemy.format(key=key)] if alchemy and key else [])+([public] if public else [])
+   for u in urls:
     try:
-        timeout_obj = aiohttp.ClientTimeout(total=timeout)
-
-        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
-            async with session.get(url, params=params) as response:
-                if response.status != 200:
-                    logger.warning(
-                        "GET %s returned HTTP %s",
-                        url,
-                        response.status,
-                    )
-                    return None
-
-                return await response.json(content_type=None)
-
-    except Exception as exc:
-        logger.warning("GET failed %s: %s", url, exc)
-        return None
-
-
-async def rpc_call(
-    chain: dict,
-    method: str,
-    params: list,
-) -> Any:
-
-    urls = []
-
-    alchemy_network = chain.get("alchemy")
-
-    if ALCHEMY_API_KEY and alchemy_network:
-        urls.append(
-            f"https://{alchemy_network}.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
-        )
-
-    public_rpc = chain.get("rpc")
-
-    if public_rpc:
-        urls.append(public_rpc)
-
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params,
-    }
-
-    timeout_obj = aiohttp.ClientTimeout(total=15)
-
-    for url in urls:
-        try:
-            async with aiohttp.ClientSession(timeout=timeout_obj) as session:
-                async with session.post(url, json=payload) as response:
-
-                    if response.status != 200:
-                        continue
-
-                    data = await response.json()
-
-                    if "error" in data:
-                        continue
-
-                    return data.get("result")
-
-        except Exception:
-            continue
-
-    return None
-
-
-# ============================================================
-# CHAIN DETECTION
-# ============================================================
-
-async def check_chain(address: str, chain_key: str) -> dict | None:
-
-    chain = CHAINS[chain_key]
-
-    code = await rpc_call(
-        chain,
-        "eth_getCode",
-        [address, "latest"],
-    )
-
-    if code is None:
-        return None
-
-    if code == "0x":
-        return None
-
-    return chain
-
-
-async def detect_chain(address: str) -> tuple[str, dict] | None:
-
-    address = address.strip()
-
-    tasks = [
-        check_chain(address, key)
-        for key in CHAINS
-    ]
-
-    results = await asyncio.gather(
-        *tasks,
-        return_exceptions=True,
-    )
-
-    for key, result in zip(CHAINS.keys(), results):
-
-        if isinstance(result, dict):
-            return key, result
-
-    return None
-
-
-# ============================================================
-# ERC20 CALL HELPERS
-# ============================================================
-
-def encode_address(address: str) -> str:
-    return address.lower().replace("0x", "").rjust(64, "0")
-
-
-def decode_string(result: str | None) -> str | None:
-
-    if not result or result == "0x":
-        return None
-
-    try:
-        data = bytes.fromhex(result[2:])
-
-        if len(data) >= 64:
-
-            offset = int.from_bytes(data[:32], "big")
-
-            if offset + 32 <= len(data):
-                length = int.from_bytes(
-                    data[offset:offset + 32],
-                    "big",
-                )
-
-                start = offset + 32
-                end = start + length
-
-                if end <= len(data):
-                    return data[start:end].decode(
-                        "utf-8",
-                        errors="ignore",
-                    )
-
-        return bytes.fromhex(
-            result[2:]
-        ).decode(
-            "utf-8",
-            errors="ignore",
-        ).rstrip("\x00")
-
-    except Exception:
-        return None
-
-
-async def erc20_call(
-    chain: dict,
-    address: str,
-    selector: str,
-) -> str | None:
-
-    return await rpc_call(
-        chain,
-        "eth_call",
-        [
-            {
-                "to": address,
-                "data": selector,
-            },
-            "latest",
-        ],
-    )
-
-
-async def get_token_metadata(
-    chain: dict,
-    address: str,
-) -> dict:
-
-    name_result, symbol_result, decimals_result = await asyncio.gather(
-        erc20_call(chain, address, "0x06fdde03"),
-        erc20_call(chain, address, "0x95d89b41"),
-        erc20_call(chain, address, "0x313ce567"),
-    )
-
-    name = decode_string(name_result) or "Unknown Token"
-    symbol = decode_string(symbol_result) or "UNKNOWN"
-
-    decimals = 18
-
-    try:
-        if decimals_result and decimals_result != "0x":
-            decimals = int(decimals_result, 16)
-    except Exception:
-        decimals = 18
-
-    return {
-        "name": name.strip() or "Unknown Token",
-        "symbol": symbol.strip() or "UNKNOWN",
-        "decimals": decimals,
-    }
-
-
-# ============================================================
-# BLOCKCHAIN DATA
-# ============================================================
-
-async def get_native_balance(
-    chain: dict,
-    address: str,
-) -> float:
-
-    result = await rpc_call(
-        chain,
-        "eth_getBalance",
-        [address, "latest"],
-    )
-
-    if not result:
-        return 0.0
-
-    try:
-        return int(result, 16) / 10**18
-    except Exception:
-        return 0.0
-
-
-async def get_transaction_count(
-    chain: dict,
-    address: str,
-) -> int:
-
-    result = await rpc_call(
-        chain,
-        "eth_getTransactionCount",
-        [address, "latest"],
-    )
-
-    if not result:
-        return 0
-
-    try:
-        return int(result, 16)
-    except Exception:
-        return 0
-
-
-async def get_latest_block(chain: dict) -> int:
-
-    result = await rpc_call(
-        chain,
-        "eth_blockNumber",
-        [],
-    )
-
-    if not result:
-        return 0
-
-    try:
-        return int(result, 16)
-    except Exception:
-        return 0
-
-
-# ============================================================
-# BLOCKSCOUT V2
-# ============================================================
-
-def blockscout_base(chain: dict) -> str:
-    return (
-        f"https://api.blockscout.com/"
-        f"{chain['chain_id']}/api/v2"
-    )
-
-
-async def blockscout_v2(
-    chain: dict,
-    path: str,
-    params: dict | None = None,
-) -> Any:
-
-    if not BLOCKSCOUT_API_KEY:
-        return None
-
-    url = blockscout_base(chain) + path
-
-    request_params = dict(params or {})
-    request_params["apikey"] = BLOCKSCOUT_API_KEY
-
-    return await http_get(
-        url,
-        params=request_params,
-        timeout=25,
-    )
-
-
-async def get_blockscout_token(
-    chain: dict,
-    address: str,
-) -> dict | None:
-
-    return await blockscout_v2(
-        chain,
-        f"/tokens/{address}",
-    )
-
-
-async def get_blockscout_counters(
-    chain: dict,
-    address: str,
-) -> dict | None:
-
-    return await blockscout_v2(
-        chain,
-        f"/tokens/{address}/counters",
-    )
-
-
-async def get_holder_page(
-    chain: dict,
-    address: str,
-    cursor: dict | None = None,
-) -> dict:
-
-    params = dict(cursor or {})
-
-    # Ask Blockscout for 10 records per page.
-    # Blockscout cursor responses include items_count,
-    # which is carried into the next cursor automatically.
-    params["items_count"] = 10
-
-    data = await blockscout_v2(
-        chain,
-        f"/tokens/{address}/holders",
-        params=params,
-    )
-
-    if not data:
-        return {
-            "items": [],
-            "next_page_params": None,
-        }
-
-    items = data.get("items") or []
-
-    return {
-        "items": items,
-        "next_page_params": data.get("next_page_params"),
-    }
-
-
-def holder_address(holder: dict) -> str:
-
-    value = holder.get("address")
-
-    if isinstance(value, dict):
-        return (
-            value.get("hash")
-            or value.get("address")
-            or "Unknown"
-        )
-
-    if isinstance(value, str):
-        return value
-
-    value = holder.get("address_hash")
-
-    if value:
-        return value
-
-    return "Unknown"
-
-
-def holder_raw_value(holder: dict) -> int:
-
-    value = (
-        holder.get("value")
-        or holder.get("balance")
-        or holder.get("token_balance")
-        or "0"
-    )
-
-    try:
-        return int(value)
-    except Exception:
-        try:
-            return int(float(value))
-        except Exception:
-            return 0
-
-
-async def get_holder_intelligence(
-    chain: dict,
-    address: str,
-    decimals: int,
-) -> dict:
-
-    token_data, counters, first_page = await asyncio.gather(
-        get_blockscout_token(chain, address),
-        get_blockscout_counters(chain, address),
-        get_holder_page(chain, address),
-    )
-
-    total_supply_raw = None
-    total_holder_count = None
-
-    if token_data:
-        total_supply_raw = (
-            token_data.get("total_supply")
-            or token_data.get("totalSupply")
-        )
-
-    if counters:
-        total_holder_count = (
-            counters.get("holders_count")
-            or counters.get("holder_count")
-            or counters.get("token_holders_count")
-            or counters.get("holders")
-        )
-
-    total_supply = None
-
-    try:
-        if total_supply_raw is not None:
-            total_supply = int(total_supply_raw) / (
-                10 ** decimals
-            )
-    except Exception:
-        total_supply = None
-
-    try:
-        if total_holder_count is not None:
-            total_holder_count = int(total_holder_count)
-    except Exception:
-        total_holder_count = None
-
-    return {
-        "total_supply": total_supply,
-        "holder_count": total_holder_count,
-        "first_page": first_page,
-    }
-
-
-# ============================================================
-# DEXSCREENER
-# ============================================================
-
-async def get_market_data(
-    address: str,
-    chain: dict,
-) -> dict | None:
-
-    url = (
-        "https://api.dexscreener.com/"
-        f"latest/dex/tokens/{address}"
-    )
-
-    data = await http_get(
-        url,
-        timeout=20,
-    )
-
-    if not data:
-        return None
-
-    pairs = data.get("pairs") or []
-
-    if not pairs:
-        return None
-
-    chain_id = str(chain["chain_id"])
-    chain_name = chain["name"].lower()
-
-    matching = []
-
-    for pair in pairs:
-
-        pair_chain = str(
-            pair.get("chainId", "")
-        ).lower()
-
-        if (
-            pair_chain == chain_id
-            or pair_chain == chain_name
-            or pair_chain in (
-                chain_name.replace(" ", ""),
-                chain_name.replace(" ", "-"),
-            )
-        ):
-            matching.append(pair)
-
-    if not matching:
-        matching = pairs
-
-    pair = matching[0]
-
-    return {
-        "pair": (
-            f"{pair.get('baseToken', {}).get('symbol', '?')}/"
-            f"{pair.get('quoteToken', {}).get('symbol', '?')}"
-        ),
-        "dex": pair.get("dexId") or "Unknown",
-        "price": pair.get("priceUsd"),
-        "change_24h": (
-            pair.get("priceChange", {}).get("h24")
-        ),
-        "liquidity": (
-            pair.get("liquidity", {}).get("usd")
-        ),
-        "volume_24h": (
-            pair.get("volume", {}).get("h24")
-        ),
-        "market_cap": pair.get("marketCap"),
-        "fdv": pair.get("fdv"),
-        "url": pair.get("url"),
-    }
-
-
-# ============================================================
-# MAIN ANALYSIS
-# ============================================================
-
-async def analyze_token(address: str) -> dict:
-
-    address = address.strip()
-
-    if not address.startswith("0x") or len(address) != 42:
-        raise ValueError("Invalid EVM contract address.")
-
-    detected = await detect_chain(address)
-
-    if not detected:
-        raise ValueError(
-            "Could not identify the blockchain for that contract."
-        )
-
-    chain_key, chain = detected
-
-    metadata_task = get_token_metadata(
-        chain,
-        address,
-    )
-
-    balance_task = get_native_balance(
-        chain,
-        address,
-    )
-
-    tx_task = get_transaction_count(
-        chain,
-        address,
-    )
-
-    block_task = get_latest_block(
-        chain,
-    )
-
-    market_task = get_market_data(
-        address,
-        chain,
-    )
-
-    metadata, balance, tx_count, latest_block, market = (
-        await asyncio.gather(
-            metadata_task,
-            balance_task,
-            tx_task,
-            block_task,
-            market_task,
-        )
-    )
-
-    holder_data = await get_holder_intelligence(
-        chain,
-        address,
-        metadata["decimals"],
-    )
-
-    return {
-        "address": address,
-        "chain_key": chain_key,
-        "chain": chain,
-        "metadata": metadata,
-        "native_balance": balance,
-        "transaction_count": tx_count,
-        "latest_block": latest_block,
-        "market": market,
-        "holders": holder_data,
-    }
-
-
-# ============================================================
-# FORMATTING
-# ============================================================
-
-def format_number(value: Any, decimals: int = 2) -> str:
-
-    if value is None:
-        return "N/A"
-
-    try:
-        return f"{float(value):,.{decimals}f}"
-    except Exception:
-        return str(value)
-
-
-def format_analysis(data: dict) -> str:
-
-    metadata = data["metadata"]
-    chain = data["chain"]
-    market = data.get("market")
-
-    lines = [
-        "🤖 Web3 Oasis — Token Analysis",
-        "",
-        f"🪙 {metadata['name']} ({metadata['symbol']})",
-        f"⛓️ Chain: {chain['name']}",
-        f"🆔 Chain ID: {chain['chain_id']}",
-        f"📜 Contract: {data['address']}",
-        f"🔢 Decimals: {metadata['decimals']}",
-        "",
-        (
-            f"💰 Native Balance: "
-            f"{format_number(data['native_balance'], 6)} "
-            f"{chain['native']}"
-        ),
-        f"🔢 Transaction Count: {data['transaction_count']}",
-        f"🧱 Latest Block: {data['latest_block']}",
-        "",
-        "📊 Market Data",
-    ]
-
-    if not market:
-        lines.append("• No DexScreener pair found.")
-
-    else:
-        lines.extend([
-            f"• Pair: {market.get('pair', 'N/A')}",
-            f"  DEX: {market.get('dex', 'N/A')}",
-            f"  Price: ${market.get('price', 'N/A')}",
-            f"  24h Change: {market.get('change_24h', 'N/A')}%",
-            f"  Liquidity: ${format_number(market.get('liquidity'))}",
-            f"  24h Volume: ${format_number(market.get('volume_24h'))}",
-            f"  Market Cap: ${format_number(market.get('market_cap'), 0)}",
-            f"  FDV: ${format_number(market.get('fdv'), 0)}",
-        ])
-
-        if market.get("url"):
-            lines.append(
-                f"  🔗 {market['url']}"
-            )
-
-    return "\n".join(lines)
-
-
-def format_holder_page(
-    data: dict,
-    page_items: list,
-    page_number: int,
-    has_previous: bool,
-    has_next: bool,
-) -> str:
-
-    metadata = data["metadata"]
-    chain = data["chain"]
-    holders = data["holders"]
-
-    total_supply = holders.get("total_supply")
-    holder_count = holders.get("holder_count")
-
-    lines = [
-        "👥 Web3 Oasis — Holder Intelligence",
-        "",
-        f"🪙 {metadata['name']} ({metadata['symbol']})",
-        f"⛓️ {chain['name']}",
-        f"📜 {data['address']}",
-        "",
-        (
-            f"💰 Total Supply: "
-            f"{format_number(total_supply)} "
-            f"{metadata['symbol']}"
-        ),
-    ]
-
-    if holder_count is not None:
-        lines.append(
-            f"👥 Holder Count: {holder_count:,}"
-        )
-    else:
-        lines.append(
-            "👥 Holder Count: Unavailable"
-        )
-
-    lines.extend([
-        "",
-        f"🏆 Top Holders — Page {page_number}",
-        "",
-    ])
-
-    if not page_items:
-        lines.append("No holder records were returned.")
-        return "\n".join(lines)
-
-    for index, holder in enumerate(page_items, start=1):
-
-        address = holder_address(holder)
-
-        raw_value = holder_raw_value(holder)
-
-        try:
-            amount = raw_value / (
-                10 ** metadata["decimals"]
-            )
-        except Exception:
-            amount = 0
-
-        if len(address) > 18:
-            display_address = (
-                f"{address[:10]}..."
-                f"{address[-6:]}"
-            )
-        else:
-            display_address = address
-
-        lines.append(
-            f"{index}. {display_address} — "
-            f"{amount:,.2f} {metadata['symbol']}"
-        )
-
-    lines.extend([
-        "",
-        "Use the buttons below to browse more holders.",
-    ])
-
-    return "\n".join(lines)
-
-
-def format_holders(data: dict) -> str:
-
-    first_page = data["holders"]["first_page"]
-
-    return format_holder_page(
-        data=data,
-        page_items=first_page.get("items", []),
-        page_number=1,
-        has_previous=False,
-        has_next=bool(
-            first_page.get("next_page_params")
-        ),
-    )
+     if (await rpc(s,u,'eth_getCode',[a,'latest']))!='0x':return {'chain_id':cid,'name':name,'slug':slug}
+    except: pass
+   return None
+  out=await asyncio.gather(*(probe(cid,c) for cid,c in EVM_CHAINS.items()),return_exceptions=True)
+ return [x for x in out if isinstance(x,dict)]
+def dec_uint(x):
+ try:return int(x,16)
+ except:return 0
+def dec_string(x):
+ try:
+  h=x[2:]
+  if len(h)>=128:
+   off=int(h[:64],16)*2; n=int(h[off:off+64],16); return bytes.fromhex(h[off+64:off+64+n*2]).decode(errors='ignore').strip()
+  return bytes.fromhex(h).decode(errors='ignore').strip('\x00').strip()
+ except:return ''
+async def evm_token(a,c):
+ key=os.getenv('ALCHEMY_API_KEY','').strip(); _,_,alchemy,public=EVM_CHAINS[c['chain_id']]; urls=([alchemy.format(key=key)] if alchemy and key else [])+([public] if public else []); last=None
+ for u in urls:
+  try:
+   async with aiohttp.ClientSession() as s:
+    vals=await asyncio.gather(*(rpc(s,u,'eth_call',[{'to':a,'data':sel},'latest']) for sel in SELECTORS.values()))
+   name,sym,dec,sup=vals; d=dec_uint(dec); supply=dec_uint(sup)/(10**d if d<78 else 1)
+   return {'family':'evm','chain':c['name'],'chain_id':c['chain_id'],'slug':c['slug'],'contract':a,'name':dec_string(name) or 'Unknown Token','symbol':dec_string(sym) or '???','decimals':d,'total_supply':supply}
+  except Exception as e:last=e
+ raise RuntimeError(str(last))
+async def blockscout_holders(a,cid,page_params=None):
+ key=os.getenv('BLOCKSCOUT_API_KEY','').strip()
+ if not key:raise RuntimeError('BLOCKSCOUT_API_KEY is not configured.')
+ p={'apikey':key,'items_count':50}; p.update(page_params or {})
+ async with aiohttp.ClientSession() as s:d=await http_json(s,'GET',f'https://api.blockscout.com/{cid}/api/v2/tokens/{a}/holders',params=p)
+ items=[]
+ for x in d.get('items',[]):
+  h=x.get('address') or {}; items.append({'address':h.get('hash') or h.get('address_hash') or '','value':x.get('value') or x.get('token_value') or '0','percentage':x.get('percentage')})
+ return {'items':items,'next_page_params':d.get('next_page_params')}
+async def blockscout_holder_count(a,cid):
+ key=os.getenv('BLOCKSCOUT_API_KEY','').strip()
+ if not key:return None
+ try:
+  async with aiohttp.ClientSession() as s:d=await http_json(s,'GET',f'https://api.blockscout.com/{cid}/api/v2/tokens/{a}/counters',params={'apikey':key})
+  for k in ('holders','token_holders','holders_count'):
+   if k in d:return int(d[k])
+ except:pass
+ return None
+async def get_holders_page(a,c,page_params=None):return await blockscout_holders(a,c['chain_id'],page_params)
+async def solana_token(a):
+ key=os.getenv('ALCHEMY_API_KEY','').strip()
+ if not key:raise RuntimeError('ALCHEMY_API_KEY is required for Solana.')
+ u=f'https://solana-mainnet.g.alchemy.com/v2/{key}'
+ async with aiohttp.ClientSession() as s:supply,largest=await asyncio.gather(rpc(s,u,'getTokenSupply',[a]),rpc(s,u,'getTokenLargestAccounts',[a]))
+ v=(supply or {}).get('value',{}); d=int(v.get('decimals',0)); raw=int(v.get('amount','0'))
+ return {'family':'solana','chain':'Solana','contract':a,'name':'SPL Token','symbol':'','decimals':d,'total_supply':raw/(10**d if d else 1),'top_accounts':(largest or {}).get('value',[]),'note':'Top token accounts are shown; this is not a global holder count.'}
+async def sui_token(a):
+ if '::' not in a:return {'family':'sui','chain':'Sui','contract':a,'name':'Sui Object','symbol':'','note':'For token metadata, send the coin type, e.g. 0x...::module::TOKEN.'}
+ async with aiohttp.ClientSession() as s:md,sup=await asyncio.gather(rpc(s,'https://fullnode.mainnet.sui.io:443','suix_getCoinMetadata',[a]),rpc(s,'https://fullnode.mainnet.sui.io:443','suix_getTotalSupply',[a]))
+ md=md or {}; d=int(md.get('decimals',0)); raw=int((sup or {}).get('value','0'))
+ return {'family':'sui','chain':'Sui','contract':a,'name':md.get('name') or 'Unknown Sui Coin','symbol':md.get('symbol') or '???','decimals':d,'total_supply':raw/(10**d if d else 1),'note':'Sui holder indexing is not presented as an exact global count here.'}
+async def tron_token(a):
+ h={}; k=os.getenv('TRONGRID_API_KEY','').strip()
+ if k:h['TRON-PRO-API-KEY']=k
+ async with aiohttp.ClientSession() as s:d=await http_json(s,'GET',f'https://api.trongrid.io/v1/contracts/{a}',headers=h)
+ x=(d.get('data') or [{}])[0]; return {'family':'tron','chain':'TRON','contract':a,'name':x.get('name') or 'TRC-20 Contract','symbol':x.get('symbol') or '???','note':'TRON metadata is read from TronGrid.'}
+async def ton_token(a):
+ h={}; k=os.getenv('TONCENTER_API_KEY','').strip()
+ if k:h['X-API-Key']=k
+ async with aiohttp.ClientSession() as s:d=await http_json(s,'GET','https://toncenter.com/api/v3/jetton/masters',params={'jetton_address':a,'limit':1},headers=h)
+ x=(d.get('jetton_masters') or [{}])[0]; c=x.get('jetton_content') or {}; return {'family':'ton','chain':'TON','contract':a,'name':c.get('name') or x.get('name') or 'Jetton','symbol':c.get('symbol') or x.get('symbol') or '???','decimals':x.get('decimals'),'total_supply':x.get('total_supply'),'note':'TON Jetton metadata is read from TON Center.'}
+async def analyze_address(a):
+ a=a.strip(); f=detect_address_family(a)
+ if f=='evm':
+  m=await detect_evm(a)
+  if not m:raise RuntimeError('No supported EVM deployment was detected.')
+  return {'family':'evm','matches':[await evm_token(a,c) for c in m]}
+ if f=='solana':return await solana_token(a)
+ if f=='sui':return await sui_token(a)
+ if f=='tron':return await tron_token(a)
+ if f=='ton':return await ton_token(a)
+ raise RuntimeError('Address format not recognized.')
+async def market_data(slug,a):
+ try:
+  async with aiohttp.ClientSession() as s:return await http_json(s,'GET',f'https://api.dexscreener.com/tokens/v1/{slug}/{a}')
+ except:return []
