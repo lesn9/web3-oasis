@@ -273,38 +273,78 @@ async def solana_token(a):
     raise RuntimeError(last)
 
 
+async def solana_token_account_page(owner,mint):
+    key=os.getenv("ALCHEMY_API_KEY","").strip()
+    if not key:
+        raise RuntimeError("ALCHEMY_API_KEY is required for Solana token-account details.")
+    url=f"https://solana-mainnet.g.alchemy.com/v2/{key}"
+    async with aiohttp.ClientSession() as s:
+        d=await rpc(s,url,"getTokenAccountsByOwner",[owner,{"mint":mint},{"encoding":"jsonParsed"}])
+    if not isinstance(d,list): return []
+    out=[]
+    for x in d:
+        info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
+        ta=info.get("tokenAmount") or {}; amt=ta.get("amount")
+        if amt is None: continue
+        try: raw=int(amt)
+        except: raw=0
+        if raw<=0: continue
+        out.append({"address":x.get("pubkey"),"raw":raw,"decimals":ta.get("decimals"),"value":ta.get("uiAmountString") or str(raw)})
+    return out
+
 async def solana_all_holders(a):
     key=os.getenv("ALCHEMY_API_KEY","").strip()
-    if not key:raise RuntimeError("ALCHEMY_API_KEY is required for full Solana holder indexing.")
-    url=f"https://solana-mainnet.g.alchemy.com/v2/{key}";owners={};cursor=None;token_accounts=0;total_accounts=None
-    async with aiohttp.ClientSession() as s:
+    if not key: raise RuntimeError("ALCHEMY_API_KEY is required for full Solana holder indexing.")
+    url=f"https://solana-mainnet.g.alchemy.com/v2/{key}"; owners={}; token_accounts=0
+    async def scan_das(s):
+        nonlocal token_accounts
+        cursor=None; found=False
         for _ in range(1000):
             params={"mintAddress":a,"limit":1000,"options":{"showZeroBalance":False}}
-            if cursor:params["cursor"]=cursor
+            if cursor: params["cursor"]=cursor
             d=await rpc(s,url,"getTokenAccounts",[params])
-            if not isinstance(d,dict):
-                raise RuntimeError("Alchemy Solana DAS returned no token-account data for this mint.")
+            if not isinstance(d,dict): return False
             rows=d.get("token_accounts") or d.get("tokenAccounts") or []
-            total_accounts=d.get("total",total_accounts)
-            token_accounts+=len(rows)
+            if not rows: return found
+            found=True
             for x in rows:
-                # Alchemy DAS returns owner/amount at the token-account record level.
-                owner=x.get("owner") or ((x.get("account") or {}).get("owner"))
-                amount=x.get("amount")
+                owner=x.get("owner") or ((x.get("account") or {}).get("owner")); amount=x.get("amount")
                 if amount is None:
-                    info=((x.get("account") or {}).get("data") or {}).get("parsed",{}).get("info",{})
-                    owner=owner or info.get("owner")
-                    amount=(info.get("tokenAmount") or {}).get("amount")
+                    info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
+                    owner=owner or info.get("owner"); amount=(info.get("tokenAmount") or {}).get("amount")
                 if owner:
-                    try:amt=int(amount or 0)
-                    except:amt=0
-                    if amt>0:owners[owner]=owners.get(owner,0)+amt
+                    try: amt=int(amount or 0)
+                    except: amt=0
+                    if amt>0: owners[owner]=owners.get(owner,0)+amt
+                    token_accounts+=1
             cursor=d.get("cursor") or d.get("paginationKey")
-            if not cursor or not rows:break
-            if token_accounts>=300000:raise RuntimeError("Solana token has more than 300,000 token accounts; holder scan safety limit reached.")
-    items=[{"address":o,"raw":v,"value":str(v)} for o,v in owners.items() if v>0]
-    items.sort(key=lambda x:x["raw"],reverse=True)
-    return {"items":items,"total":len(items),"source":"Alchemy Solana DAS (unique wallet owners)","token_accounts":token_accounts,"indexed_token_accounts":total_accounts,"page_size":10}
+            if not cursor: return True
+        return True
+    async def scan_program(s,program):
+        nonlocal token_accounts
+        cursor=None
+        for _ in range(1000):
+            cfg={"encoding":"jsonParsed","limit":1000,"filters":[{"memcmp":{"offset":0,"bytes":a}}]}
+            if cursor: cfg["paginationKey"]=cursor
+            d=await rpc(s,url,"getProgramAccountsV2",[program,cfg])
+            if not isinstance(d,dict): return
+            value=d.get("value")
+            if isinstance(value,dict): rows=value.get("accounts") or value.get("value") or []; cursor=value.get("paginationKey")
+            else: rows=value or []; cursor=d.get("paginationKey")
+            if not rows: return
+            for x in rows:
+                info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {}); owner=info.get("owner"); ta=info.get("tokenAmount") or {}
+                try: amt=int(ta.get("amount") or 0)
+                except: amt=0
+                if owner and amt>0: owners[owner]=owners.get(owner,0)+amt
+                if owner: token_accounts+=1
+            if not cursor: return
+    async with aiohttp.ClientSession() as s:
+        if not await scan_das(s):
+            await scan_program(s,"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            await scan_program(s,"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+    items=[{"address":o,"raw":v,"value":str(v)} for o,v in owners.items() if v>0]; items.sort(key=lambda x:x["raw"],reverse=True)
+    return {"items":items,"total":len(items),"source":"Alchemy Solana token accounts (unique wallet owners)","token_accounts":token_accounts,"page_size":10}
 
 
 SUI_RPC="https://fullnode.mainnet.sui.io:443"

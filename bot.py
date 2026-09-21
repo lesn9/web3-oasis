@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from analysis import (
     analyze_address, evm_holders, evm_holder_next, solana_all_holders,
     sui_holders, tron_holders, tron_holder_page, ton_all_holders,
-    wallet_details, market_data, fmt_number, short_address
+    wallet_details, market_data, fmt_number, short_address, solana_token_account_page
 )
 
 SESSIONS = {}
@@ -206,8 +206,18 @@ async def cb(u,c):
         x=s['items'][i];addr=x['address']
         try:details=await asyncio.wait_for(wallet_details(s['family'],addr,s.get('chain')),30)
         except Exception as e:details={'error':str(e)}
-        t=(f"📋 <b>Holder Details</b>\n\n📍 Address\n<code>{html.escape(addr)}</code>\n\n"
+        token_accounts=[]
+        if s['family']=='solana':
+            try: token_accounts=await asyncio.wait_for(solana_token_account_page(addr,s['address']),30)
+            except Exception as e: details['token_accounts_error']=str(e)
+        t=(f"📋 <b>Holder Details</b>\n\n📍 Wallet Address\n<code>{html.escape(addr)}</code>\n\n"
            f"💰 Token Balance: <code>{html.escape(str(x.get('value','0')))}</code>\n")
+        if s['family']=='solana':
+            t+=f"\n🪙 <b>Token Accounts: {len(token_accounts)}</b>\n"
+            for ta in token_accounts:
+                t+=f"• <code>{html.escape(str(ta.get('address','')))}</code> — {html.escape(str(ta.get('value','0')))}\n"
+            if not token_accounts and details.get('token_accounts_error'):
+                t+=f"ℹ️ Token-account details unavailable: <code>{html.escape(str(details['token_accounts_error'])[:400])}</code>\n"
         if x.get('percent') is not None:t+=f"📊 Supply Share: <code>{html.escape(str(x['percent']))}%</code>\n"
         if details.get('type'):t+=f"🏷️ Account Type: <b>{html.escape(str(details['type']))}</b>\n"
         if details.get('chain'):t+=f"⛓️ Chain: {html.escape(str(details['chain']))}\n"
