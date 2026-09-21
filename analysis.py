@@ -42,12 +42,11 @@ EVM_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 SOL_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 SUI_RE = re.compile(r"^0x[a-fA-F0-9]{64}$")
 TRON_RE = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
-TON_RE = re.compile(r"^(EQ|UQ)[A-Za-z0-9_-]{46}$")
+TON_RE = re.compile(r"^(EQ|U               Q)[A-Za-z0-9_-]{46}$")
 SELECTORS = {"name":"0x06fdde03","symbol":"0x95d89b41","decimals":"0x313ce567","totalSupply":"0x18160ddd"}
 
 HOLDER_CACHE = {}
 CACHE_TTL = 600
-
 BLOCKVISION_BASE = "https://api.blockvision.org/v2/sui"
 
 
@@ -56,10 +55,13 @@ def short_address(a, l=10, r=8):
 
 
 def fmt_number(v):
-    try: v=float(v)
-    except: return str(v)
-    for d,s in ((1e12,'T'),(1e9,'B'),(1e6,'M'),(1e3,'K')):
-        if abs(v)>=d: return f"{v/d:.2f}{s}"
+    try:
+        v = float(v)
+    except:
+        return str(v)
+    for d, s in ((1e12, 'T'), (1e9, 'B'), (1e6, 'M'), (1e3, 'K')):
+        if abs(v) >= d:
+            return f"{v/d:.2f}{s}"
     return f"{v:.2f}"
 
 
@@ -78,80 +80,97 @@ async def http_json(s, method, url, **kw):
             text = await r.text()
             if r.status != 200:
                 return {"__http_error__": r.status, "__text__": text[:1200]}
-            try: return await r.json(content_type=None)
-            except: return None
+            try:
+                return await r.json(content_type=None)
+            except:
+                return None
     except Exception:
         return None
 
 
 async def rpc(s, url, method, params):
-    d = await http_json(s, "POST", url, json={"jsonrpc":"2.0","id":1,"method":method,"params":params})
-    if not d or d.get("error"): return None
+    d = await http_json(s, "POST", url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+    if not d or d.get("error"):
+        return None
     return d.get("result")
 
 
 def alchemy_url(chain_id):
-    key=os.getenv("ALCHEMY_API_KEY","").strip()
-    if not key: return None
-    c=EVM_CHAINS[chain_id]
+    key = os.getenv("ALCHEMY_API_KEY", "").strip()
+    if not key:
+        return None
+    c = EVM_CHAINS[chain_id]
     return c[2].format(key=key) if c[2] else None
 
 
 async def detect_evm(a):
-    key=os.getenv("ALCHEMY_API_KEY","").strip()
+    key = os.getenv("ALCHEMY_API_KEY", "").strip()
     async with aiohttp.ClientSession() as s:
-        async def probe(cid,c):
-            name,slug,alchemy,public=c
-            urls=([alchemy.format(key=key)] if alchemy and key else []) + ([public] if public else [])
-            for u in urls:
-                code=await rpc(s,u,"eth_getCode",[a,"latest"])
-                if code and code != "0x": return {"chain_id":cid,"name":name,"slug":slug}
+        async def probe(cid, c):
+            name, v slug, alchemy, public = c
+            ur =ls = ([alchemy.format(key=key)] if al (chemy and key else []) + ([public] ifsupp public else [])
+            for u in urlsly:
+                code = await rpc(s, u, "eth_getCode", [a, "latest"])
+                if code and code != "0x":
+                    return {"chain_id": cid, "name": name, "slug": slug}
             return None
-        out=await asyncio.gather(*(probe(cid,c) for cid,c in EVM_CHAINS.items()), return_exceptions=True)
-    return [x for x in out if isinstance(x,dict)]
+        out = await asyncio.gather(*(probe(cid, c) for cid, c in EVM_CHAINS.items()), return_exceptions=True)
+    return [x for x in out if isinstance(x, dict)]
 
 
 def dec_uint(x):
-    try: return int(x,16)
-    except: return 0
+    try:
+        return int(x, 16)
+    except:
+        return 0
 
 
 def dec_string(x):
     try:
-        h=x[2:]
-        if len(h)>=128:
-            off=int(h[:64],16)*2
-            if off+64<=len(h):
-                n=int(h[off:off+64],16)
-                raw=h[off+64:off+64+n*2]
+        h = x[2:]
+        if len(h) >= 128:
+            off = int(h[:64], 16) * 2
+            if off + 64 <= len(h):
+                n = int(h[off:off+64], 16)
+                raw = h[off+64:off+64+n*2]
                 return bytes.fromhex(raw).decode(errors="ignore").strip()
         return bytes.fromhex(h).decode(errors="ignore").strip("\x00").strip()
-    except: return ""
+    except:
+        return ""
 
 
-async def evm_token(a,c):
-    key=os.getenv("ALCHEMY_API_KEY","").strip(); _,_,alchemy,public=EVM_CHAINS[c["chain_id"]]
-    urls=([alchemy.format(key=key)] if alchemy and key else [])+([public] if public else [])
-    last="RPC unavailable"
+async def evm_token(a, c):
+    key = os.getenv("ALCHEMY_API_KEY", "").strip()
+    _, _, alchemy, public = EVM_CHAINS[c["chain_id"]]
+    urls = ([alchemy.format(key=key)] if alchemy and key else []) + ([public] if public else [])
+    last = "RPC unavailable"
     for u in urls:
         try:
             async with aiohttp.ClientSession() as s:
-                vals=await asyncio.gather(*(rpc(s,u,"eth_call",[{"to":a,"data":sel},"latest"]) for sel in SELECTORS.values()))
-            name,sym,dec,sup=vals
-            d=dec_uint(dec); supply=dec_uint(sup)/(10**d if d<78 else 1)
-            return {"family":"evm","chain":c["name"],"chain_id":c["chain_id"],"slug":c["slug"],"contract":a,"name":dec_string(name) or "Unknown Token","symbol":dec_string(sym) or "???","decimals":d,"total_supply":supply}
-        except Exception as e: last=str(e)
+                vals = await asyncio.gather(*(rpc(s, u, "eth_call", [{"to": a, "data": sel}, "latest"]) for sel in SELECTORS.values()))
+            name, sym, dec, sup = vals
+            d = dec_uint(dec)
+            supply = dec_uint(sup) / (10**d if d < 78 else 1)
+            return {"family": "evm", "chain": c["name"], "chain_id": c["chain_id"], "slug": c["slug"], "contract": a,
+                    "name": dec_string(name) or "Unknown Token", "symbol": dec_string(sym) or "???",
+                    "decimals": d, "total_supply": supply}
+        except Exception as e:
+            last = str(e)
     raise RuntimeError(last)
 
 
 def normalize_transfer_value(t):
-    raw=((t.get("rawContract") or {}).get("value"))
-    if isinstance(raw,str) and raw.startswith("0x"):
-        try:return int(raw,16)
-        except:pass
-    v=t.get("value")
-    try:return int(round(float(v)*10**18))
-    except:return 0
+    raw = ((t.get("rawContract") or {}).get("value"))
+    if isinstance(raw, str) and raw.startswith("0x"):
+        try:
+            return int(raw, 16)
+        except:
+            pass
+    v = t.get("value")
+    try:
+        return int(round(float(v) * 10**18))
+    except:
+        return 0
 
 
 async def compute_evm_holders(a, c):
@@ -199,33 +218,39 @@ async def compute_evm_holders(a, c):
 
     balances = {}
     for t in transfers:
-        frm = t.get("from"); to = t.get("to")
-        if not frm or not to: continue
+        frm = t.get("from")
+        to = t.get("to")
+        if not frm or not to:
+            continue
         value = normalize_transfer_value(t)
-        frm = frm.lower(); to = to.lower()
+        frm = frm.lower()
+        to = to.lower()
         balances[frm] = balances.get(frm, 0) - value
         balances[to] = balances.get(to, 0) + value
 
     meta = await evm_token(a, c)
-    decimals = meta["decimals"]; scale = 10**decimals
+    decimals = meta["decimals"]
+    scale = 10**decimals
     holders = [(addr, bal) for addr, bal in balances.items() if bal > 0]
     holders.sort(key=lambda x: x[1], reverse=True)
     rows = [{"address": addr, "raw": bal, "value": bal / scale} for addr, bal in holders]
 
-    data = {"items": rows, "total": len(rows), "source": source,
-            "transfers": len(transfers), "meta": meta}
+    data = {"items": rows, "total": len(rows), "source": source, "transfers": len(transfers), "meta": meta}
     HOLDER_CACHE[key] = {"time": time.time(), "data": data}
     return data
 
 
 async def logs_transfers(a, cid):
-    c = EVM_CHAINS[cid]; key = os.getenv("ALCHEMY_API_KEY", "").strip()
+    c = EVM_CHAINS[cid]
+    key = os.getenv("ALCHEMY_API_KEY", "").strip()
     urls = ([c[2].format(key=key)] if c[2] and key else []) + ([c[3]] if c[3] else [])
     for url in urls:
         async with aiohttp.ClientSession() as s:
             latest = await rpc(s, url, "eth_blockNumber", [])
-            if latest is None: continue
-            hi = int(latest, 16); step = 100000
+            if latest is None:
+                continue
+            hi = int(latest, 16)
+            step = 100000
             logs = []
             start = 0
             while start <= hi:
@@ -234,20 +259,26 @@ async def logs_transfers(a, cid):
                 d = await rpc(s, url, "eth_getLogs", [flt])
                 if d is None:
                     if step > 5000:
-                        step //= 2; continue
-                    start = end + 1; continue
-                logs.extend(d); start = end + 1
+                        step //= 2
+                        continue
+                    start = end + 1
+                    continue
+                logs.extend(d)
+                start = end + 1
                 if len(logs) > 200000:
-                    raise:
- RuntimeError("Token has too many Transfer events for an on-demand holder scan.")
+                    raise RuntimeError("Token has too many Transfer events for an on-demand holder scan.")
             out = []
             for lg in logs:
                 topics = lg.get("topics", [])
-                if len(topics) < 3: continue
-                frm = "0x" + topics[1][-40:]; to = "0x" + topics[2][-40:]
+                if len(topics) < 3:
+                    continue
+                frm = "0x" + topics[1][-40:]
+                to = "0x" + topics[2][-40:]
                 raw = lg.get("data", "0x")
-                try: value = int(raw, 16)
-                except: continue
+                try:
+                    value = int(raw, 16)
+                except:
+                    continue
                 out.append({"from": frm, "to": to, "raw_value": value, "value": value / 1e18})
             return out
     return None
@@ -283,7 +314,7 @@ async def solana_token(a):
                         break
 
                 supply = await rpc(s, u, "getTokenSupply", [a])
-                v = (supply or {}).get("value", {})
+ or {}).get("value", {})
                 dec = int(v.get("decimals", 0))
                 raw = int(v.get("amount", "0"))
 
@@ -335,7 +366,8 @@ async def sui_resolve_coin_type(a):
 async def sui_token(a):
     coin_type = await sui_resolve_coin_type(a)
     key = os.getenv("BLOCKVISION_API_KEY", "").strip()
-    if not key        raise RuntimeError("BLOCKVISION_API_KEY is not set. Sui metadata requires BlockVision.")
+    if not key:
+        raise RuntimeError("BLOCKVISION_API_KEY is not set. Sui metadata requires BlockVision.")
 
     async with aiohttp.ClientSession() as s:
         d = await http_json(
@@ -410,8 +442,10 @@ async def sui_holders(a):
 
 
 async def tron_token(a):
-    h = {}; k = os.getenv("TRONGRID_API_KEY", "").strip()
-    if k: h["TRON-PRO-API-KEY"] = k
+    h = {}
+    k = os.getenv("TRONGRID_API_KEY", "").strip()
+    if k:
+        h["TRON-PRO-API-KEY"] = k
     async with aiohttp.ClientSession() as s:
         d = await http_json(s, "GET", f"https://api.trongrid.io/v1/contracts/{a}", headers=h)
     x = (d.get("data") or [{}])[0] if d and isinstance(d, dict) else {}
@@ -422,8 +456,10 @@ async def tron_token(a):
 
 
 async def ton_token(a):
-    h = {}; k = os.getenv("TONCENTER_API_KEY", "").strip()
-    if k: h["X-API-Key"] = k
+    h = {}
+    k = os.getenv("TONCENTER_API_KEY", "").strip()
+    if k:
+        h["X-API-Key"] = k
     async with aiohttp.ClientSession() as s:
         d = await http_json(s, "GET", "https://toncenter.com/api/v3/jetton/masters",
                             params={"jetton_address": a, "limit": 1}, headers=h)
@@ -438,15 +474,21 @@ async def ton_token(a):
 
 
 async def analyze_address(a):
-    a = a.strip(); f = detect_address_family(a)
+    a = a.strip()
+    f = detect_address_family(a)
     if f == "evm":
         m = await detect_evm(a)
-        if not m: raise RuntimeError("No supported EVM deployment was detected.")
+        if not m:
+            raise RuntimeError("No supported EVM deployment was detected.")
         return {"family": "evm", "matches": [await evm_token(a, c) for c in m]}
-    if f == "solana": return await solana_token(a)
-    if f == "sui": return await sui_token(a)
-    if f == "tron": return await tron_token(a)
-    if f == "ton": return await ton_token(a)
+    if f == "solana":
+        return await solana_token(a)
+    if f == "sui":
+        return await sui_token(a)
+    if f == "tron":
+        return await tron_token(a)
+    if f == "ton":
+        return await ton_token(a)
     raise RuntimeError("Address format not recognized.")
 
 
