@@ -274,71 +274,44 @@ async def solana_token(a):
 
 
 async def solana_token_account_page(owner,mint):
-    # Called when a Solana holder wallet is clicked. Returns that wallet's
-    # token accounts for the mint. Alchemy preferred; public RPC as fallback.
     key=os.getenv("ALCHEMY_API_KEY","").strip()
-    urls=[]
-    if key:
-        urls.append(f"https://solana-mainnet.g.alchemy.com/v2/{key}")
-    urls.append("https://api.mainnet-beta.solana.com")
+    if not key:
+        raise RuntimeError("ALCHEMY_API_KEY is required for Solana token-account details.")
+    url=f"https://solana-mainnet.g.alchemy.com/v2/{key}"
     async with aiohttp.ClientSession() as s:
-        for url in urls:
-            d=await rpc(s,url,"getTokenAccountsByOwner",[owner,{"mint":mint},{"encoding":"jsonParsed"}])
-            if d is None:
-                continue
-            # Standard shape is a list; some providers wrap under "value"
-            rows=d if isinstance(d,list) else (d.get("value") if isinstance(d,dict) else None)
-            if not isinstance(rows,list):
-                continue
-            out=[]
-            for x in rows:
-                info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
-                ta=info.get("tokenAmount") or {}
-                amt=ta.get("amount")
-                if amt is None:
-                    continue
-                try:
-                    raw=int(amt)
-                except Exception:
-                    raw=0
-                if raw<=0:
-                    continue
-                out.append({
-                    "address":x.get("pubkey"),
-                    "raw":raw,
-                    "decimals":ta.get("decimals"),
-                    "value":ta.get("uiAmountString") or str(raw)
-                })
-            return out
-    return []
+        d=await rpc(s,url,"getTokenAccountsByOwner",[owner,{"mint":mint},{"encoding":"jsonParsed"}])
+    if not isinstance(d,list): return []
+    out=[]
+    for x in d:
+        info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
+        ta=info.get("tokenAmount") or {}; amt=ta.get("amount")
+        if amt is None: continue
+        try: raw=int(amt)
+        except: raw=0
+        if raw<=0: continue
+        out.append({"address":x.get("pubkey"),"raw":raw,"decimals":ta.get("decimals"),"value":ta.get("uiAmountString") or str(raw)})
+    return out
 
 async def solana_all_holders(a):
-    # SOLANA HOLDERS ONLY. Returns unique wallet owners first.
-    # Click a wallet → solana_token_account_page shows that wallet's token accounts.
-    # Does not touch Solana /analyze or any other chain.
+    # SOLANA HOLDERS ONLY. Build unique wallet owners from every non-zero
+    # token account for this mint. This does not affect Solana /analyze.
     key=os.getenv("ALCHEMY_API_KEY","").strip()
-    urls=[]
-    if key:
-        urls.append(f"https://solana-mainnet.g.alchemy.com/v2/{key}")
-    urls.append("https://api.mainnet-beta.solana.com")
-
-    owners={}          # owner_pubkey -> raw amount
+    if not key:
+        raise RuntimeError("ALCHEMY_API_KEY is required for full Solana holder indexing.")
+    url=f"https://solana-mainnet.g.alchemy.com/v2/{key}"
+    owners={}
     token_accounts=0
-    source="Solana RPC"
 
-    def add_owner(owner, raw):
+    def add_das_rows(rows):
         nonlocal token_accounts
-        if not owner or raw<=0:
-            return
-        owners[owner]=owners.get(owner,0)+raw
-        token_accounts+=1
-
-    def parse_das_rows(rows):
+        added=False
         for x in rows or []:
             if not isinstance(x,dict):
                 continue
+            # DAS getTokenAccounts normally exposes owner/amount directly.
             owner=x.get("owner")
             amount=x.get("amount")
+            # Be defensive about alternate indexed response shapes.
             acct=x.get("account") or {}
             if not owner:
                 owner=acct.get("owner")
@@ -349,181 +322,218 @@ async def solana_all_holders(a):
             if amount is None:
                 amount=(info.get("tokenAmount") or {}).get("amount")
             if amount is None:
-                ta=x.get("tokenAmount")
-                if isinstance(ta,dict):
-                    amount=ta.get("amount")
+                amount=x.get("tokenAmount")
+                if isinstance(amount,dict):
+                    amount=amount.get("amount")
             if not owner or amount is None:
                 continue
-            try:
-                raw=int(amount)
-            except Exception:
-                raw=0
-            add_owner(owner, raw)
+            try: raw=int(amount)
+            except Exception: raw=0
+            if raw<=0:
+                continue
+            owners[owner]=owners.get(owner,0)+raw
+            token_accounts+=1
+            added=True
+        return added
 
-    async def try_das(s, url):
-        # Alchemy DAS getTokenAccounts (params is a single object, not an array)
+    async def scan_das(s):
+        # Alchemy documents getTokenAccounts with page-based pagination.
+        # Its result is {total, limit, page, cursor, token_accounts}.
         page=1
-        saw=False
-        for _ in range(500):
-            body={
-                "jsonrpc":"2.0","id":1,"method":"getTokenAccounts",
-                "params":{"mintAddress":a,"page":page,"limit":1000,"options":{"showZeroBalance":False}}
-            }
-            d=await http_json(s,"POST",url,json=body)
-            if not isinstance(d,dict) or d.get("error"):
-                return saw
-            result=d.get("result") or {}
-            if not isinstance(result,dict):
-                return saw
-            rows=result.get("token_accounts") or result.get("tokenAccounts") or []
+        saw_any=False
+        for _ in range(10000):
+            params={"mintAddress":a,"page":page,"limit":1000,"options":{"showZeroBalance":False}}
+            d=await rpc(s,url,"getTokenAccounts",params)
+            if not isinstance(d,dict):
+                return False
+            rows=d.get("token_accounts") or d.get("tokenAccounts") or []
             if not isinstance(rows,list):
                 rows=[]
             if rows:
-                saw=True
-                parse_das_rows(rows)
-            cursor=result.get("cursor")
+                saw_any=True
+                add_das_rows(rows)
+            # Prefer the API's cursor when present; if cursor is present we
+            # restart this scan using cursor mode because Alchemy allows either
+            # pagination mode, not both at once.
+            cursor=d.get("cursor")
             if cursor:
-                while cursor:
-                    body2={
-                        "jsonrpc":"2.0","id":1,"method":"getTokenAccounts",
-                        "params":{"mintAddress":a,"cursor":cursor,"limit":1000,"options":{"showZeroBalance":False}}
-                    }
-                    d2=await http_json(s,"POST",url,json=body2)
-                    if not isinstance(d2,dict) or d2.get("error"):
+                for _ in range(10000):
+                    params={"mintAddress":a,"cursor":cursor,"limit":1000,"options":{"showZeroBalance":False}}
+                    d2=await rpc(s,url,"getTokenAccounts",params)
+                    if not isinstance(d2,dict):
                         break
-                    r2=d2.get("result") or {}
-                    rows2=r2.get("token_accounts") or r2.get("tokenAccounts") or []
+                    rows2=d2.get("token_accounts") or d2.get("tokenAccounts") or []
                     if not isinstance(rows2,list) or not rows2:
                         break
-                    saw=True
-                    parse_das_rows(rows2)
-                    cursor=r2.get("cursor")
-                return saw
+                    saw_any=True
+                    add_das_rows(rows2)
+                    cursor=d2.get("cursor")
+                    if not cursor:
+                        break
+                return saw_any
             if not rows or len(rows)<1000:
-                return saw
+                return saw_any
             page+=1
-        return saw
+        return saw_any
 
-    async def try_largest(s, url):
-        # Always-available top-20 token accounts → resolve owner of each
-        d=await rpc(s,url,"getTokenLargestAccounts",[a])
-        if not isinstance(d,list) or not d:
-            return False
-        for acc in d:
-            if not isinstance(acc,dict):
-                continue
-            ta_addr=acc.get("address")
-            if not ta_addr:
-                continue
-            try:
-                raw=int(acc.get("amount") or 0)
-            except Exception:
-                raw=0
-            if raw<=0:
-                continue
-            info=await rpc(s,url,"getAccountInfo",[ta_addr,{"encoding":"jsonParsed"}])
-            if not isinstance(info,dict):
-                continue
-            data=(info.get("value") or {}).get("data") or {}
-            if isinstance(data,dict):
-                parsed=data.get("parsed") or {}
-                owner=(parsed.get("info") or {}).get("owner")
-                if owner:
-                    add_owner(owner, raw)
-        return bool(owners)
+    async def scan_program(s,program):
+        nonlocal token_accounts
+        pagination=None
+        found=False
+        for _ in range(10000):
+            cfg={"encoding":"jsonParsed","limit":1000,
+                 "filters":[{"memcmp":{"offset":0,"bytes":a}}]}
+            if pagination:
+                cfg["paginationKey"]=pagination
+            d=await rpc(s,url,"getProgramAccountsV2",[program,cfg])
+            if not isinstance(d,dict):
+                return found
+
+            # Alchemy's documented response without withContext is:
+            # result: { accounts: [...], paginationKey: ... }
+            rows=d.get("accounts")
+            pagination=d.get("paginationKey")
+            # Also accept the wrapped form in case withContext is enabled by a
+            # future provider response.
+            if rows is None and isinstance(d.get("value"),dict):
+                v=d["value"]
+                rows=v.get("accounts") or v.get("value") or []
+                pagination=v.get("paginationKey")
+            if rows is None:
+                rows=d.get("value") if isinstance(d.get("value"),list) else []
+
+            if not isinstance(rows,list) or not rows:
+                return found
+            found=True
+            for x in rows:
+                if not isinstance(x,dict):
+                    continue
+                info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
+                owner=info.get("owner")
+                ta=info.get("tokenAmount") or {}
+                try: raw=int(ta.get("amount") or 0)
+                except Exception: raw=0
+                if owner and raw>0:
+                    owners[owner]=owners.get(owner,0)+raw
+                    token_accounts+=1
+            if not pagination:
+                return found
+        return found
 
     async with aiohttp.ClientSession() as s:
-        # 1) Prefer Alchemy DAS full unique-owner index when key is present
-        if key:
-            try:
-                if await try_das(s, urls[0]):
-                    source="Alchemy Solana DAS (unique wallet owners)"
-            except Exception:
-                pass
-        # 2) Fallback: top largest accounts + owner resolution (works with or without key)
-        if not owners:
-            owners.clear()
-            token_accounts=0
-            for u in urls:
-                try:
-                    if await try_largest(s, u):
-                        source="Solana getTokenLargestAccounts (top holders)"
-                        break
-                except Exception:
-                    continue
+        das_ok=False
+        try:
+            das_ok=await scan_das(s)
+        except Exception:
+            das_ok=False
+        if not das_ok or not owners:
+            owners.clear(); token_accounts=0
+            await scan_program(s,"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            await scan_program(s,"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
 
     items=[{"address":o,"raw":v,"value":str(v)} for o,v in owners.items() if v>0]
     items.sort(key=lambda x:x["raw"],reverse=True)
     if not items:
-        raise RuntimeError(
-            "No non-zero Solana token accounts found for this mint. "
-            "Set ALCHEMY_API_KEY for full unique-owner indexing, or the mint may have zero holders."
-        )
-    return {
-        "items":items,
-        "total":len(items),
-        "source":source,
-        "token_accounts":token_accounts,
-        "page_size":10
-    }
+        raise RuntimeError("Alchemy found no non-zero token accounts for this Solana mint. The mint may not be indexed by the configured Alchemy Solana DAS endpoint.")
+    return {"items":items,"total":len(items),"source":"Alchemy Solana token accounts (unique wallet owners)","token_accounts":token_accounts,"page_size":10}
 
 
 async def evm_market_data(slug,a):
-    # EVM market data ONLY. Keep this completely separate from holder logic.
-    # DexScreener chain slug for Robinhood Chain (4663) is "robinhood".
-    # Try multiple routes; a missing pair is a real "not indexed" result, not a bug.
-    endpoints=[
-        f"https://api.dexscreener.com/token-pairs/v1/{slug}/{a}",
-        f"https://api.dexscreener.com/tokens/v1/{slug}/{a}",
-        f"https://api.dexscreener.com/latest/dex/tokens/{a}",
+    """Return DexScreener pairs for an EVM token.
+
+    IMPORTANT: this function is isolated from all holder logic.  The Robinhood
+    holder architecture is not touched by market-data lookups.
+
+    DexScreener can expose the same token through more than one route, so we
+    try the chain-specific token-pairs endpoint first, then the token endpoint
+    and finally the generic token/search endpoints.  Every returned pair is
+    still filtered by BOTH chainId and the exact token contract address.
+    """
+    slug=str(slug or "").strip().lower()
+    address=str(a or "").strip()
+    if not slug or not EVM_RE.fullmatch(address):
+        return []
+
+    endpoints = [
+        # Preferred route: returns all indexed pools for this token on a chain.
+        f"https://api.dexscreener.com/token-pairs/v1/{slug}/{address}",
+        # Existing public token route.
+        f"https://api.dexscreener.com/tokens/v1/{slug}/{address}",
+        # Generic route; filter by chain/address below.
+        f"https://api.dexscreener.com/latest/dex/tokens/{address}",
     ]
+
+    candidates=[]
     try:
-        async with aiohttp.ClientSession() as s:
-            candidates=[]
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
             for endpoint in endpoints:
                 for attempt in range(3):
-                    d=await http_json(s,"GET",endpoint)
-                    if isinstance(d,list):
-                        candidates.extend(d)
+                    data=await http_json(session,"GET",endpoint)
+                    if isinstance(data,list):
+                        candidates.extend(data)
                         break
-                    if isinstance(d,dict) and isinstance(d.get("pairs"),list):
-                        candidates.extend(d["pairs"])
+                    if isinstance(data,dict) and isinstance(data.get("pairs"),list):
+                        candidates.extend(data["pairs"])
                         break
-                    if isinstance(d,dict) and d.get("__http_error__") in (429,500,502,503,504):
-                        await asyncio.sleep(0.7*(attempt+1))
+                    status=data.get("__http_error__") if isinstance(data,dict) else None
+                    if status in (429,500,502,503,504) and attempt < 2:
+                        await asyncio.sleep(0.75*(attempt+1))
                         continue
                     break
 
-            # Address search fallback (useful when the chain-specific index is still catching up)
+            # Last-resort address search.  This is intentionally after the
+            # exact token endpoints so a search result can never bypass the
+            # exact chain/address validation below.
             for attempt in range(3):
-                d=await http_json(s,"GET","https://api.dexscreener.com/latest/dex/search",params={"q":a})
-                if isinstance(d,dict) and isinstance(d.get("pairs"),list):
-                    candidates.extend(d["pairs"])
+                data=await http_json(
+                    session,
+                    "GET",
+                    "https://api.dexscreener.com/latest/dex/search",
+                    params={"q":address},
+                )
+                if isinstance(data,dict) and isinstance(data.get("pairs"),list):
+                    candidates.extend(data["pairs"])
                     break
-                if isinstance(d,dict) and d.get("__http_error__") in (429,500,502,503,504):
-                    await asyncio.sleep(0.7*(attempt+1)); continue
+                status=data.get("__http_error__") if isinstance(data,dict) else None
+                if status in (429,500,502,503,504) and attempt < 2:
+                    await asyncio.sleep(0.75*(attempt+1))
+                    continue
                 break
-
-            exact=[];seen=set(); target=a.lower(); target_chain=str(slug).lower()
-            # Accept both exact slug and common aliases (e.g. robinhood / robinhoodchain)
-            aliases={target_chain}
-            if target_chain=="robinhood":
-                aliases.add("robinhoodchain")
-            for pair in candidates:
-                if not isinstance(pair,dict): continue
-                chain=str(pair.get("chainId") or "").lower()
-                if chain not in aliases: continue
-                bt=str((pair.get("baseToken") or {}).get("address") or "").lower()
-                qt=str((pair.get("quoteToken") or {}).get("address") or "").lower()
-                if bt!=target and qt!=target: continue
-                key=str(pair.get("pairAddress") or pair.get("url") or "")
-                if not key: key=repr(pair)
-                if key in seen: continue
-                seen.add(key); exact.append(pair)
-            exact.sort(key=lambda p: float(((p.get("liquidity") or {}).get("usd")) or 0),reverse=True)
-            return exact
     except Exception:
         return []
+
+    target=address.lower()
+    wanted_chain=slug
+    exact=[]
+    seen=set()
+
+    def num(v):
+        try:return float(v or 0)
+        except:return 0.0
+
+    for pair in candidates:
+        if not isinstance(pair,dict):
+            continue
+        chain_id=str(pair.get("chainId") or "").strip().lower()
+        if chain_id != wanted_chain:
+            continue
+        base=pair.get("baseToken") or {}
+        quote=pair.get("quoteToken") or {}
+        base_address=str(base.get("address") or "").lower()
+        quote_address=str(quote.get("address") or "").lower()
+        if target not in (base_address,quote_address):
+            continue
+
+        pair_id=str(pair.get("pairAddress") or pair.get("url") or "")
+        if pair_id in seen:
+            continue
+        seen.add(pair_id)
+        exact.append(pair)
+
+    # Highest-liquidity pool first.  Never let one malformed liquidity field
+    # make the entire market-data lookup fail.
+    exact.sort(key=lambda p:num((p.get("liquidity") or {}).get("usd")),reverse=True)
+    return exact
 
 
 SUI_RPC="https://fullnode.mainnet.sui.io:443"
