@@ -1,237 +1,209 @@
-import asyncio, html, uuid
+import os, asyncio, uuid, html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from analysis import (
-    analyze_address, evm_holders, evm_holder_next, solana_all_holders,
-    sui_holders, tron_holders, tron_holder_page, ton_all_holders,
-    wallet_details, market_data, fmt_number, short_address
+    analyze_address, compute_evm_holders, sui_holders, market_data,
+    fmt_number, short_address
 )
 
 SESSIONS = {}
-PAGE_SIZE = 10
-SESSION_TTL = 1800
 
 
 def arg(u):
-    p=(u.message.text or '').split(maxsplit=1)
-    return p[1].strip() if len(p)>1 else ''
+    p = u.message.text.split(maxsplit=1)
+    return p[1].strip() if len(p) > 1 else ''
 
 
-def cleanup_sessions():
-    import time
-    now=time.time()
-    for sid,s in list(SESSIONS.items()):
-        if now-s.get('created',now)>SESSION_TTL:SESSIONS.pop(sid,None)
-
-
-async def start(u,c):
+async def start(u, c):
     await u.message.reply_text(
         '🤖 <b>Web3 Oasis</b>\n\n'
         'Automatic chain detection is enabled.\n\n'
         '/analyze <code>address</code>\n'
         '/holders <code>address</code>\n'
         '/risk <code>address</code>\n'
-        '/report <code>address</code>',parse_mode='HTML')
+        '/report <code>address</code>',
+        parse_mode='HTML'
+    )
 
 
-async def analyze_cmd(u,c):
-    a=arg(u)
-    if not a:return await u.message.reply_text('Usage: /analyze <contract/address>')
-    m=await u.message.reply_text('🔎 Detecting chain and analyzing…')
+async def analyze_cmd(u, c):
+    a = arg(u)
+    if not a:
+        return await u.message.reply_text('Usage: /analyze <contract/address>')
+    m = await u.message.reply_text('🔎 Detecting chain and analyzing…')
     try:
-        r=await asyncio.wait_for(analyze_address(a),90)
-        if r.get('family')=='evm':
+        r = await asyncio.wait_for(analyze_address(a), 75)
+
+        if r.get('family') == 'evm':
             for x in r['matches']:
-                t=(f"🤖 <b>Web3 Oasis — Token Analysis</b>\n\n🪙 <b>{html.escape(x['name'])}</b> ({html.escape(x['symbol'])})\n"
-                   f"⛓️ Chain: <b>{html.escape(x['chain'])}</b>\n🆔 Chain ID: {x['chain_id']}\n📜 Contract: <code>{html.escape(a)}</code>\n"
-                   f"🔢 Decimals: {x['decimals']}\n💰 Total Supply: {fmt_number(x['total_supply'])} {html.escape(x['symbol'])}\n")
-                markets=await market_data(x['slug'],a)
+                t = (
+                    f"🤖 <b>Web3 Oasis — Token Analysis</b>\n\n"
+                    f"🪙 <b>{html.escape(x['name'])}</b> ({html.escape(x['symbol'])})\n"
+                    f"⛓️ Chain: <b>{html.escape(x['chain'])}</b>\n"
+                    f"🆔 Chain ID: {x['chain_id']}\n"
+                    f"📜 Contract: <code>{html.escape(a)}</code>\n"
+                    f"🔢 Decimals: {x['decimals']}\n"
+                    f"💰 Total Supply: {fmt_number(x['total_supply'])} {html.escape(x['symbol'])}\n"
+                )
+                markets = await market_data(x['slug'], a)
                 if markets:
-                    p=markets[0];liq=(p.get('liquidity') or {}).get('usd')
-                    t+=(f"\n📊 <b>Market Data</b>\n• Pair: {html.escape((p.get('baseToken') or {}).get('symbol','?'))}/{html.escape((p.get('quoteToken') or {}).get('symbol','?'))}\n"
-                        f"• DEX: {html.escape(p.get('dexId','?'))}\n• Price: ${p.get('priceUsd','?')}\n• Liquidity: ${liq if liq is not None else '?'}\n"
+                    p = markets[0]
+                    liq = (p.get('liquidity') or {}).get('usd')
+                    t += (
+                        f"\n📊 <b>Market Data</b>\n"
+                        f"• Pair: {html.escape((p.get('baseToken') or {}).get('symbol','?'))}/"
+                        f"{html.escape((p.get('quoteToken') or {}).get('symbol','?'))}\n"
+                        f"• DEX: {html.escape(p.get('dexId','?'))}\n"
+                        f"• Price: ${p.get('priceUsd','?')}\n"
+                        f"• Liquidity: ${liq if liq is not None else '?'}\n"
                         f"• 24h Volume: ${((p.get('volume') or {}).get('h24')) if (p.get('volume') or {}).get('h24') is not None else '?'}\n"
                         f"• 24h Change: {((p.get('priceChange') or {}).get('h24')) if (p.get('priceChange') or {}).get('h24') is not None else '?'}%\n"
-                        f"🔗 {html.escape(p.get('url',''))}\n")
-                else:t+='\n📊 <b>Market Data</b>\n• No indexed DexScreener pair found.\n'
-                await u.message.reply_text(t,parse_mode='HTML',disable_web_page_preview=True)
-            await m.delete();return
-        t=(f"🤖 <b>Web3 Oasis — Token Analysis</b>\n\n🪙 <b>{html.escape(str(r.get('name','Unknown')))}</b> ({html.escape(str(r.get('symbol','???')))})\n"
-           f"⛓️ Chain: <b>{html.escape(str(r.get('chain')))}</b>\n📜 Address: <code>{html.escape(a)}</code>\n")
-        if r.get('coin_type'):t+=f"🪙 Coin Type: <code>{html.escape(r['coin_type'])}</code>\n"
-        if r.get('decimals') is not None:t+=f"🔢 Decimals: {r['decimals']}\n"
-        if r.get('total_supply') is not None:t+=f"💰 Total Supply: {fmt_number(r['total_supply'])}\n"
-        await m.edit_text(t,parse_mode='HTML',disable_web_page_preview=True)
+                        f"🔗 {html.escape(p.get('url',''))}\n"
+                    )
+                else:
+                    t += '\n📊 <b>Market Data</b>\n• No indexed DexScreener pair found.\n'
+                await u.message.reply_text(t, parse_mode='HTML', disable_web_page_preview=True)
+            await m.delete()
+            return
+
+        t = (
+            f"🤖 <b>Web3 Oasis — Token Analysis</b>\n\n"
+            f"🪙 <b>{html.escape(str(r.get('name','Unknown')))}</b> ({html.escape(str(r.get('symbol','???')))})\n"
+            f"⛓️ Chain: <b>{html.escape(str(r.get('chain')))}</b>\n"
+            f"📜 Address: <code>{html.escape(a)}</code>\n"
+        )
+        if r.get('coin_type'):
+            t += f"🪙 Coin Type: <code>{html.escape(r['coin_type'])}</code>\n"
+        if r.get('decimals') is not None:
+            t += f"🔢 Decimals: {r['decimals']}\n"
+        if r.get('total_supply') is not None:
+            t += f"💰 Total Supply: {fmt_number(r['total_supply'])}\n"
+        if r.get('total_holders') is not None:
+            t += f"👥 Total Holders: <b>{r['total_holders']}</b>\n"
+        if r.get('note'):
+            t += f"\nℹ️ {html.escape(r['note'])}"
+
+        if r.get('family') == 'solana' and r.get('holders'):
+            t += '\n\n🏆 <b>Top Holders</b>\n'
+            for i, x in enumerate(r['holders'][:10], 1):
+                owner = x.get('owner') or ''
+                line = f"{i}. <code>{html.escape(x.get('address',''))}</code> — {x.get('value','0')}"
+                if owner:
+                    line += f"\n   └ owner: <code>{html.escape(owner)}</code>"
+                t += line + "\n"
+            t += "\n👉 Run /holders to page through the full list."
+
+        if r.get('family') == 'sui' and r.get('total_holders'):
+            t += "\n👉 Run /holders to page through the full Sui holder list."
+
+        await m.edit_text(t, parse_mode='HTML', disable_web_page_preview=True)
     except Exception as e:
-        await m.edit_text(f'❌ Analysis failed:\n<code>{html.escape(str(e)[:1200])}</code>',parse_mode='HTML')
+        await m.edit_text(
+            f'❌ Analysis failed:\n<code>{html.escape(str(e)[:1200])}</code>',
+            parse_mode='HTML'
+        )
 
 
-async def build_session(a,r):
-    family=r.get('family')
-    if family=='evm':
-        matches=r.get('matches',[])
-        if len(matches)!=1:raise RuntimeError('This token is detected on multiple supported EVM chains. I need one unambiguous chain for holder data.')
-        ch=matches[0];data=await asyncio.wait_for(evm_holders(a,ch),75)
-        return {'family':'evm','address':a,'chain':ch,'symbol':ch.get('symbol') or r.get('symbol',''),'items':data['items'],'page':0,'total':data.get('total'),'source':data['source'],'cursor':data.get('next'),'cursor_history':[None], 'provider':data.get('provider'),'all_items':data.get('all_items')}
-    if family=='solana':
-        data=await asyncio.wait_for(solana_all_holders(a),150)
-        return {'family':'solana','address':a,'chain':{'name':'Solana'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local'}
-    if family=='sui':
-        data=await asyncio.wait_for(sui_holders(a),75)
-        if data.get('needs_key'):raise RuntimeError('Sui holder indexing needs the BLOCKVISION_API_KEY already configured in Railway.')
-        return {'family':'sui','address':a,'coin_type':data['coin_type'],'chain':{'name':'Sui'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local'}
-    if family=='tron':
-        data=await asyncio.wait_for(tron_holders(a),45)
-        return {'family':'tron','address':a,'chain':{'name':'TRON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':'TronScan','provider':'offset','offset':0}
-    if family=='ton':
-        data=await asyncio.wait_for(ton_all_holders(a),150)
-        return {'family':'ton','address':a,'chain':{'name':'TON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local'}
-    raise RuntimeError('Holder intelligence is not available for this address type.')
-
-
-def page_rows(s):
-    start=s['page']*PAGE_SIZE;end=min(start+PAGE_SIZE,len(s['items']))
-    return s['items'][start:end],start,end
-
-
-def holder_title(s):
-    if s['family']=='evm':return s.get('symbol') or 'Token'
-    if s['family']=='solana':return s.get('symbol') or 'SPL Token'
-    if s['family']=='sui':return s.get('symbol') or 'Sui Coin'
-    if s['family']=='tron':return s.get('symbol') or 'TRC Token'
-    return s.get('symbol') or 'Jetton'
-
-
-def holder_text(s):
-    rows,start,end=page_rows(s);total=s.get('total')
-    t=("👥 <b>Web3 Oasis — Holder Intelligence</b>\n\n"
-       f"🪙 <b>{html.escape(holder_title(s))}</b>\n⛓️ {html.escape(s['chain']['name'])}\n📜 <code>{html.escape(s['address'])}</code>\n"
-       f"👥 <b>Total Holders: {total if total is not None else 'not supplied'}</b>\n"
-       f"📄 <b>Showing {start+1}–{end}</b>\nℹ️ Source: {html.escape(s['source'])}\n\n")
-    for i,x in enumerate(rows,start+1):
-        value=x.get('value','0');pct=x.get('percent')
-        extra=f" • {pct}%" if pct is not None and pct!='' else ''
-        t+=f"<b>{i}.</b> <code>{html.escape(x['address'])}</code> — {html.escape(str(value))}{extra}\n"
-    return t,rows,start
-
-
-async def render(target,sid):
-    cleanup_sessions();s=SESSIONS.get(sid)
-    if not s:return
-    t,rows,start=holder_text(s);kb=[]
-    for pos,x in enumerate(rows,start):
-        kb.append([InlineKeyboardButton(f"{pos+1}. {short_address(x['address'],8,6)}",callback_data=f"hd:{sid}:{pos}")])
-    nav=[]
-    if s['page']>0:nav.append(InlineKeyboardButton('⬅️ Previous',callback_data=f"hp:{sid}"))
-    has_next=(s['page']+1)*PAGE_SIZE<len(s['items']) or (s.get('provider') in ('blockscout','offset') and s.get('has_next',True)) or (s.get('provider')=='cmc' and (s['page']+1)*PAGE_SIZE<len(s.get('all_items',[])))
-    if has_next:nav.append(InlineKeyboardButton('Next ➡️',callback_data=f"hn:{sid}"))
-    if nav:kb.append(nav)
-    kb.append([InlineKeyboardButton('🔄 Refresh',callback_data=f"hr:{sid}")])
-    markup=InlineKeyboardMarkup(kb)
-    if isinstance(target,Update):await target.message.reply_text(t,parse_mode='HTML',reply_markup=markup,disable_web_page_preview=True)
-    else:await target.edit_message_text(t,parse_mode='HTML',reply_markup=markup,disable_web_page_preview=True)
-
-
-async def holders_cmd(u,c):
-    a=arg(u)
-    if not a:return await u.message.reply_text('Usage: /holders <token contract/address>')
-    m=await u.message.reply_text('🔎 Detecting chain…')
+async def holders_cmd(u, c):
+    a = arg(u)
+    if not a:
+        return await u.message.reply_text('Usage: /holders <token contract/address>')
+    m = await u.message.reply_text('🔎 Detecting chain…')
     try:
-        r=await asyncio.wait_for(analyze_address(a),90)
-        await m.edit_text('⏳ Building the holder index…')
-        s=await build_session(a,r);sid=uuid.uuid4().hex[:10];s['created']=__import__('time').time();SESSIONS[sid]=s
-        await m.delete();await render(u,sid)
+        r = await asyncio.wait_for(analyze_address(a), 75)
+
+        if r.get('family') == 'evm':
+            matches = r.get('matches', [])
+            if len(matches) != 1:
+                return await m.edit_text(
+                    '⚠️ This address is detected on multiple supported EVM chains. '
+                    'I need one unambiguous chain before building the holder list.'
+                )
+            ch = matches[0]
+            await m.edit_text(
+                f"⏳ Building the holder snapshot for <b>{html.escape(ch['name'])}</b>…\n\n"
+                "This scans the token's indexed ERC-20 transfer history and calculates current non-zero balances."
+                "\nIt may take a little longer for tokens with many transfers.",
+                parse_mode='HTML'
+            )
+            data = await asyncio.wait_for(compute_evm_holders(a, ch), 180)
+            if not data['items']:
+                return await m.edit_text(
+                    '⚠️ No non-zero holders were derived from the token transfer history. '
+                    'That can mean the token has no indexed ERC-20 transfers or uses a non-standard transfer mechanism.'
+                )
+            sid = uuid.uuid4().hex[:10]
+            SESSIONS[sid] = {
+                'family': 'evm', 'address': a, 'chain': ch,
+                'items': data['items'], 'page': 0,
+                'total': data['total'], 'source': data['source'],
+                'symbol': ch.get('symbol') or data['meta'].get('symbol',''),
+                'decimals': data['meta'].get('decimals',18)
+            }
+            await m.delete()
+            await render(u, sid)
+            return
+
+        if r.get('family') == 'solana':
+            await m.edit_text('⏳ Loading Solana holder accounts from Alchemy…')
+            items = r.get('holders') or []
+            if not items:
+                return await m.edit_text('⚠️ No token accounts returned for this mint.')
+            sid = uuid.uuid4().hex[:10]
+            SESSIONS[sid] = {
+                'family': 'solana', 'address': a,
+                'items': items, 'page': 0,
+                'total': r.get('total_holders'),
+                'chain': {'name': 'Solana'},
+                'source': 'Alchemy getTokenAccounts',
+                'symbol': r.get('symbol') or 'SPL Token',
+            }
+            await m.delete()
+            await render(u, sid)
+            return
+
+        if r.get('family') == 'sui':
+            await m.edit_text('⏳ Loading Sui holder index from BlockVision…')
+            data = await asyncio.wait_for(sui_holders(a), 60)
+            if data.get('needs_key'):
+                return await m.edit_text(
+                    'ℹ️ Sui token holders require a BlockVision API key.\n\n'
+                    'Set <code>BLOCKVISION_API_KEY</code> in Railway to enable the Sui holder list.\n\n'
+                    f"Coin type: <code>{html.escape(data['coin_type'])}</code>",
+                    parse_mode='HTML'
+                )
+            if not data.get('items'):
+                return await m.edit_text('⚠️ The Sui holder index returned no holder records.')
+            sid = uuid.uuid4().hex[:10]
+            SESSIONS[sid] = {
+                'family': 'sui', 'address': a, 'coin_type': data['coin_type'],
+                'items': data['items'], 'page': 0, 'total': data.get('total'),
+                'chain': {'name': 'Sui'}, 'source': 'BlockVision'
+            }
+            await m.delete()
+            await render(u, sid)
+            return
+
+        await m.edit_text(
+            '⚠️ Holder pagination is implemented for EVM, Solana, and Sui tokens. '
+            'TRON and TON are not yet supported.'
+        )
     except Exception as e:
-        await m.edit_text(f'❌ Holder lookup failed:\n<code>{html.escape(str(e)[:1200])}</code>',parse_mode='HTML')
+        await m.edit_text(
+            f'❌ Holder lookup failed:\n<code>{html.escape(str(e)[:1200])}</code>',
+            parse_mode='HTML'
+        )
 
 
-async def holder_next(s):
-    if s['provider']=='cmc':
-        if (s['page']+1)*PAGE_SIZE < len(s.get('all_items',[])):
-            s['page']+=1;return True
-        return False
-    if s['provider']=='blockscout':
-        data=await evm_holder_next(s['address'],s['chain'],s.get('cursor'))
-        if not data.get('items'):return False
-        s['items'].extend(data['items']);s['cursor_history'].append(s.get('cursor'));s['cursor']=data.get('next');s['page']+=1;return True
-    if s['provider']=='offset':
-        off=s['offset']+PAGE_SIZE;data=await tron_holder_page(s['address'],off)
-        if not data['items']:return False
-        s['items'].extend(data['items']);s['offset']=off;s['total']=data.get('total',s.get('total'));s['has_next']=data.get('has_next',False);s['page']+=1;return True
-    if (s['page']+1)*PAGE_SIZE<len(s['items']):s['page']+=1;return True
-    return False
+def holder_text(sid):
+    s = SESSIONS.get(sid)
+    if not s: return None
+    page = s['page']; start = page * 10; end = min(start + 10, len(s['items']))
+    visible = s['items'][start:end]
+    total = s.get('total')
 
-
-async def holder_previous(s):
-    if s['page']<=0:return False
-    s['page']-=1
-    return True
-
-
-async def refresh_session(s):
-    a=s['address'];r=await asyncio.wait_for(analyze_address(a),90);new=await build_session(a,r)
-    keep={'family':new['family'],'address':new['address'],'chain':new['chain'],'symbol':new.get('symbol',''),'items':new['items'],'page':0,'total':new.get('total'),'source':new['source'],'provider':new.get('provider')}
-    for k in ('cursor','cursor_history','offset','has_next','coin_type','all_items'):keep[k]=new.get(k)
-    keep['created']=__import__('time').time();s.clear();s.update(keep)
-
-
-async def cb(u,c):
-    q=u.callback_query;await q.answer();parts=q.data.split(':');action,sid=parts[0],parts[1];s=SESSIONS.get(sid)
-    if not s:return await q.edit_message_text('Session expired. Run /holders again.')
-    if action=='hd':
-        i=int(parts[2]);rows,_,_=page_rows(s)
-        if i>=len(s['items']):return
-        x=s['items'][i];addr=x['address']
-        try:details=await asyncio.wait_for(wallet_details(s['family'],addr,s.get('chain')),30)
-        except Exception as e:details={'error':str(e)}
-        t=(f"📋 <b>Holder Details</b>\n\n📍 Address\n<code>{html.escape(addr)}</code>\n\n"
-           f"💰 Token Balance: <code>{html.escape(str(x.get('value','0')))}</code>\n")
-        if x.get('percent') is not None:t+=f"📊 Supply Share: <code>{html.escape(str(x['percent']))}%</code>\n"
-        if details.get('type'):t+=f"🏷️ Account Type: <b>{html.escape(str(details['type']))}</b>\n"
-        if details.get('chain'):t+=f"⛓️ Chain: {html.escape(str(details['chain']))}\n"
-        if details.get('native') is not None:t+=f"⛽ Native Balance: <code>{details['native']:.8f}</code>\n"
-        if details.get('tx_count') is not None:t+=f"🔢 Transaction Count: <code>{details['tx_count']}</code>\n"
-        if details.get('recent_activity') is not None:t+=f"🕒 Recent Activity: <code>{details['recent_activity']}</code>\n"
-        if details.get('error'):t+=f"\nℹ️ Wallet details unavailable: <code>{html.escape(str(details['error'])[:500])}</code>\n"
-        kb=[[InlineKeyboardButton('🔎 Analyze holder',callback_data=f"wa:{sid}:{i}")],[InlineKeyboardButton('⬅️ Back to holders',callback_data=f"hb:{sid}")]]
-        return await q.message.reply_text(t,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(kb),disable_web_page_preview=True)
-    if action=='wa':
-        i=int(parts[2]);addr=s['items'][i]['address']
-        try:
-            d=await wallet_details(s['family'],addr,s.get('chain'))
-            text=(f"🔎 <b>Holder Wallet Analysis</b>\n\n📍 <code>{html.escape(addr)}</code>\n🏷️ {html.escape(str(d.get('type','Account')))}\n")
-            for label,key in [('⛽ Native Balance','native'),('🔢 Transaction Count','tx_count'),('🕒 Recent Activity','recent_activity')]:
-                if d.get(key) is not None:text+=f"{label}: <code>{d[key]}</code>\n"
-            if d.get('chain'):text+=f"⛓️ Chain: {html.escape(str(d['chain']))}\n"
-            text+='\nUse /analyze with the holder address for the raw address probe where supported.'
-            await q.message.reply_text(text,parse_mode='HTML')
-        except Exception as e:await q.message.reply_text(f"❌ Holder analysis failed: <code>{html.escape(str(e)[:700])}</code>",parse_mode='HTML')
-        return
-    if action=='hb':return await render(q,sid)
-    if action=='hn':
-        await q.answer('Loading next page…')
-        ok=await holder_next(s)
-        if not ok:return await q.answer('No more holders.',show_alert=True)
-    elif action=='hp':
-        ok=await holder_previous(s)
-        if not ok:return await q.answer('Already on the first page.',show_alert=True)
-    elif action=='hr':
-        await q.answer('Refreshing…');await refresh_session(s)
-    await render(q,sid)
-
-
-async def risk(u,c):
-    await u.message.reply_text('🛡️ Risk scoring is not being faked with a placeholder score. Current build exposes token and holder intelligence.')
-
-async def report(u,c):await analyze_cmd(u,c)
-
-
-def main():
-    token=__import__('os').getenv('TELEGRAM_BOT_TOKEN','').strip()
-    if not token:raise RuntimeError('TELEGRAM_BOT_TOKEN is not configured.')
-    app=Application.builder().token(token).build()
-    app.add_handler(CommandHandler('start',start));app.add_handler(CommandHandler('analyze',analyze_cmd));app.add_handler(CommandHandler('holders',holders_cmd));app.add_handler(CommandHandler('risk',risk));app.add_handler(CommandHandler('report',report))
-    app.add_handler(CallbackQueryHandler(cb,pattern=r'^(hd|wa|hb|hn|hp|hr):'))
-    app.run_polling(drop_pending_updates=True)
-
-if __name__=='__main__':main()
+    if s['family'] == 'evm':
+        title = f"🪙 {html.escape(s['symbol'] or 'Token')}"
+        chain = html.escape(s['chain']['name'])
+    elif s['family'] == 'solana':
+        title = f"🪙 {html.escape(s.get('symbol') or 'SPL Token')
