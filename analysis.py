@@ -296,16 +296,51 @@ async def solana_all_holders(a):
     # SOLANA HOLDERS ONLY. Build unique wallet owners from every non-zero
     # token account for this mint. This does not affect Solana /analyze.
     key=os.getenv("ALCHEMY_API_KEY","").strip()
-    if not key: raise RuntimeError("ALCHEMY_API_KEY is required for full Solana holder indexing.")
+    if not key:
+        raise RuntimeError("ALCHEMY_API_KEY is required for full Solana holder indexing.")
     url=f"https://solana-mainnet.g.alchemy.com/v2/{key}"
-    owners={}; token_accounts=0
+    owners={}
+    token_accounts=0
+
+    def add_das_rows(rows):
+        nonlocal token_accounts
+        added=False
+        for x in rows or []:
+            if not isinstance(x,dict):
+                continue
+            # DAS getTokenAccounts normally exposes owner/amount directly.
+            owner=x.get("owner")
+            amount=x.get("amount")
+            # Be defensive about alternate indexed response shapes.
+            acct=x.get("account") or {}
+            if not owner:
+                owner=acct.get("owner")
+            data=acct.get("data") or {}
+            parsed=data.get("parsed") or {}
+            info=parsed.get("info") or {}
+            owner=owner or info.get("owner")
+            if amount is None:
+                amount=(info.get("tokenAmount") or {}).get("amount")
+            if amount is None:
+                amount=x.get("tokenAmount")
+                if isinstance(amount,dict):
+                    amount=amount.get("amount")
+            if not owner or amount is None:
+                continue
+            try: raw=int(amount)
+            except Exception: raw=0
+            if raw<=0:
+                continue
+            owners[owner]=owners.get(owner,0)+raw
+            token_accounts+=1
+            added=True
+        return added
 
     async def scan_das(s):
-        nonlocal token_accounts
-        # Alchemy documents page-based pagination for getTokenAccounts. Use
-        # one pagination mode only so pages cannot be skipped or duplicated.
+        # Alchemy documents getTokenAccounts with page-based pagination.
+        # Its result is {total, limit, page, cursor, token_accounts}.
         page=1
-        saw_rows=False
+        saw_any=False
         for _ in range(10000):
             params={"mintAddress":a,"page":page,"limit":1000,"options":{"showZeroBalance":False}}
             d=await rpc(s,url,"getTokenAccounts",params)
@@ -314,59 +349,83 @@ async def solana_all_holders(a):
             rows=d.get("token_accounts") or d.get("tokenAccounts") or []
             if not isinstance(rows,list):
                 rows=[]
-            if not rows:
-                return saw_rows
-            saw_rows=True
-            for x in rows:
-                if not isinstance(x,dict): continue
-                owner=x.get("owner")
-                amount=x.get("amount")
-                if owner is None or amount is None:
-                    acct=x.get("account") or {}
-                    data=acct.get("data") or {}
-                    parsed=data.get("parsed") or {}
-                    info=parsed.get("info") or {}
-                    owner=owner or info.get("owner")
-                    if amount is None:
-                        amount=(info.get("tokenAmount") or {}).get("amount")
-                if not owner: continue
-                try: amt=int(amount or 0)
-                except: amt=0
-                if amt>0:
-                    owners[owner]=owners.get(owner,0)+amt
-                    token_accounts+=1
+            if rows:
+                saw_any=True
+                add_das_rows(rows)
+            # Prefer the API's cursor when present; if cursor is present we
+            # restart this scan using cursor mode because Alchemy allows either
+            # pagination mode, not both at once.
+            cursor=d.get("cursor")
+            if cursor:
+                for _ in range(10000):
+                    params={"mintAddress":a,"cursor":cursor,"limit":1000,"options":{"showZeroBalance":False}}
+                    d2=await rpc(s,url,"getTokenAccounts",params)
+                    if not isinstance(d2,dict):
+                        break
+                    rows2=d2.get("token_accounts") or d2.get("tokenAccounts") or []
+                    if not isinstance(rows2,list) or not rows2:
+                        break
+                    saw_any=True
+                    add_das_rows(rows2)
+                    cursor=d2.get("cursor")
+                    if not cursor:
+                        break
+                return saw_any
+            if not rows or len(rows)<1000:
+                return saw_any
             page+=1
-        return saw_rows
+        return saw_any
 
     async def scan_program(s,program):
         nonlocal token_accounts
-        cursor=None; found=False
+        pagination=None
+        found=False
         for _ in range(10000):
-            cfg={"encoding":"jsonParsed","limit":1000,"filters":[{"memcmp":{"offset":0,"bytes":a}}]}
-            if cursor: cfg["paginationKey"]=cursor
+            cfg={"encoding":"jsonParsed","limit":1000,
+                 "filters":[{"memcmp":{"offset":0,"bytes":a}}]}
+            if pagination:
+                cfg["paginationKey"]=pagination
             d=await rpc(s,url,"getProgramAccountsV2",[program,cfg])
-            if not isinstance(d,dict): return found
-            value=d.get("value")
-            if isinstance(value,dict):
-                rows=value.get("accounts") or value.get("value") or []
-                cursor=value.get("paginationKey")
-            else:
-                rows=value or []
-                cursor=d.get("paginationKey")
-            if not isinstance(rows,list) or not rows: return found
+            if not isinstance(d,dict):
+                return found
+
+            # Alchemy's documented response without withContext is:
+            # result: { accounts: [...], paginationKey: ... }
+            rows=d.get("accounts")
+            pagination=d.get("paginationKey")
+            # Also accept the wrapped form in case withContext is enabled by a
+            # future provider response.
+            if rows is None and isinstance(d.get("value"),dict):
+                v=d["value"]
+                rows=v.get("accounts") or v.get("value") or []
+                pagination=v.get("paginationKey")
+            if rows is None:
+                rows=d.get("value") if isinstance(d.get("value"),list) else []
+
+            if not isinstance(rows,list) or not rows:
+                return found
             found=True
             for x in rows:
+                if not isinstance(x,dict):
+                    continue
                 info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
-                owner=info.get("owner"); ta=info.get("tokenAmount") or {}
-                try: amt=int(ta.get("amount") or 0)
-                except: amt=0
-                if owner and amt>0: owners[owner]=owners.get(owner,0)+amt
-                if owner: token_accounts+=1
-            if not cursor:return found
+                owner=info.get("owner")
+                ta=info.get("tokenAmount") or {}
+                try: raw=int(ta.get("amount") or 0)
+                except Exception: raw=0
+                if owner and raw>0:
+                    owners[owner]=owners.get(owner,0)+raw
+                    token_accounts+=1
+            if not pagination:
+                return found
         return found
 
     async with aiohttp.ClientSession() as s:
-        das_ok=await scan_das(s)
+        das_ok=False
+        try:
+            das_ok=await scan_das(s)
+        except Exception:
+            das_ok=False
         if not das_ok or not owners:
             owners.clear(); token_accounts=0
             await scan_program(s,"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
@@ -375,40 +434,61 @@ async def solana_all_holders(a):
     items=[{"address":o,"raw":v,"value":str(v)} for o,v in owners.items() if v>0]
     items.sort(key=lambda x:x["raw"],reverse=True)
     if not items:
-        raise RuntimeError("Alchemy returned no token-account records for this Solana mint.")
+        raise RuntimeError("Alchemy found no non-zero token accounts for this Solana mint. The mint may not be indexed by the configured Alchemy Solana DAS endpoint.")
     return {"items":items,"total":len(items),"source":"Alchemy Solana token accounts (unique wallet owners)","token_accounts":token_accounts,"page_size":10}
 
 
 async def evm_market_data(slug,a):
-    # EVM market data ONLY. Holder code is deliberately not involved here.
+    # EVM market data ONLY. Keep this completely separate from holder logic.
+    # DexScreener's public API has several equivalent routes; try the original
+    # tokens/v1 route first, then the token-address and chain-specific routes.
+    # A transient 429/5xx must not make an otherwise indexed token look empty.
+    endpoints=[
+        f"https://api.dexscreener.com/tokens/v1/{slug}/{a}",
+        f"https://api.dexscreener.com/token-pairs/v1/{slug}/{a}",
+        f"https://api.dexscreener.com/latest/dex/tokens/{a}",
+    ]
     try:
         async with aiohttp.ClientSession() as s:
             candidates=[]
-            endpoints=[
-                f"https://api.dexscreener.com/latest/dex/tokens/{a}",
-                f"https://api.dexscreener.com/token-pairs/v1/{slug}/{a}",
-                f"https://api.dexscreener.com/tokens/v1/{slug}/{a}",
-            ]
             for endpoint in endpoints:
-                d=await http_json(s,"GET",endpoint)
+                for attempt in range(3):
+                    d=await http_json(s,"GET",endpoint)
+                    if isinstance(d,list):
+                        candidates.extend(d)
+                        break
+                    if isinstance(d,dict) and isinstance(d.get("pairs"),list):
+                        candidates.extend(d["pairs"])
+                        break
+                    if isinstance(d,dict) and d.get("__http_error__") in (429,500,502,503,504):
+                        await asyncio.sleep(0.7*(attempt+1))
+                        continue
+                    break
+
+            # Address search is a useful final DexScreener route for tokens
+            # whose chain-specific index route has not populated yet.
+            for attempt in range(3):
+                d=await http_json(s,"GET","https://api.dexscreener.com/latest/dex/search",params={"q":a})
                 if isinstance(d,dict) and isinstance(d.get("pairs"),list):
                     candidates.extend(d["pairs"])
-                elif isinstance(d,list):
-                    candidates.extend(d)
-            d=await http_json(s,"GET","https://api.dexscreener.com/latest/dex/search",params={"q":a})
-            if isinstance(d,dict) and isinstance(d.get("pairs"),list):
-                candidates.extend(d["pairs"])
-            exact=[]; seen=set()
+                    break
+                if isinstance(d,dict) and d.get("__http_error__") in (429,500,502,503,504):
+                    await asyncio.sleep(0.7*(attempt+1)); continue
+                break
+
+            exact=[];seen=set(); target=a.lower(); target_chain=str(slug).lower()
             for pair in candidates:
                 if not isinstance(pair,dict): continue
-                if str(pair.get("chainId") or "").lower()!=str(slug).lower(): continue
+                chain=str(pair.get("chainId") or "").lower()
+                if chain!=target_chain: continue
                 bt=str((pair.get("baseToken") or {}).get("address") or "").lower()
                 qt=str((pair.get("quoteToken") or {}).get("address") or "").lower()
-                if bt==a.lower() or qt==a.lower():
-                    key=str(pair.get("pairAddress") or pair.get("url") or id(pair))
-                    if key not in seen:
-                        seen.add(key); exact.append(pair)
-            exact.sort(key=lambda pair: float(((pair.get("liquidity") or {}).get("usd")) or 0), reverse=True)
+                if bt!=target and qt!=target: continue
+                key=str(pair.get("pairAddress") or pair.get("url") or "")
+                if not key: key=repr(pair)
+                if key in seen: continue
+                seen.add(key); exact.append(pair)
+            exact.sort(key=lambda p: float(((p.get("liquidity") or {}).get("usd")) or 0),reverse=True)
             return exact
     except Exception:
         return []
