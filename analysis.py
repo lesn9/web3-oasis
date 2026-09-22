@@ -690,25 +690,78 @@ async def solana_creator(mint):
     return None
 
 async def evm_creator(a,c):
-    # Blockscout instances expose creator/deployer fields inconsistently, so accept
-    # several documented/commonly indexed field names without guessing when absent.
-    if not os.getenv("BLOCKSCOUT_API_KEY","").strip(): return None
-    d=await blockscout_request(c["chain_id"],f"/tokens/{a}")
-    if not isinstance(d,dict) or d.get("__http_error__"):
-        d=await blockscout_request(c["chain_id"],f"/addresses/{a}")
+    """Find an EVM contract creator/deployer using Blockscout's indexed data.
+
+    Try the modern token/address endpoints first, then the Etherscan-compatible
+    contract-creation endpoint exposed by Blockscout.  This is EVM-only and
+    does not touch any Solana code.
+    """
+    if not os.getenv("BLOCKSCOUT_API_KEY","").strip():
+        return None
+
     def find(obj):
         if isinstance(obj,dict):
-            for k in ("creator_address_hash","creatorAddressHash","creator_address","creatorAddress","deployer","deployer_address","deployerAddress"):
+            for k in (
+                "creator_address_hash","creatorAddressHash","creator_address",
+                "creatorAddress","deployer","deployer_address","deployerAddress",
+                "contractCreator","contract_creator"
+            ):
                 v=obj.get(k)
-                if isinstance(v,str) and v.startswith("0x"): return v
+                if isinstance(v,str) and v.startswith("0x"):
+                    return v
             for k,v in obj.items():
-                if k in ("creator","contract_creator"):
+                if k in ("creator","contract_creator","contractCreator"):
                     if isinstance(v,str) and v.startswith("0x"): return v
                     z=find(v)
                     if z:return z
+        elif isinstance(obj,list):
+            for v in obj:
+                z=find(v)
+                if z:return z
         return None
+
+    # 1) Modern Blockscout endpoints.
+    for path in (f"/tokens/{a}", f"/addresses/{a}"):
+        d=await blockscout_request(c["chain_id"],path)
+        found=find(d)
+        if found:
+            return {"address":found,"label":"Creator / Deployer","source":"Blockscout"}
+
+    # 2) Etherscan-compatible Blockscout contract-creation endpoint.
+    # Robinhood has its own explorer; the other chains use Blockscout's unified
+    # API. Keep this fallback separate so existing holder behavior is unchanged.
+    key=os.getenv("BLOCKSCOUT_API_KEY","").strip()
+    if int(c["chain_id"])==4663:
+        base="https://robinhoodchain.blockscout.com/api"
+    else:
+        base=f"https://api.blockscout.com/{c['chain_id']}/api"
+    params={
+        "module":"contract",
+        "action":"getcontractcreation",
+        "contractaddresses":a,
+        "apikey":key,
+    }
+    async with aiohttp.ClientSession() as s:
+        d=await http_json(s,"GET",base,params=params)
+        # Unified Blockscout routing can be more complete for chain 4663.
+        if isinstance(d,dict) and d.get("__http_error__") and int(c["chain_id"])==4663:
+            d=await http_json(s,"GET","https://api.blockscout.com/4663/api",params=params)
     found=find(d)
-    return {"address":found,"label":"Creator / Deployer","source":"Blockscout"} if found else None
+    if found:
+        return {"address":found,"label":"Creator / Deployer","source":"Blockscout"}
+
+    # Some Blockscout Etherscan-compatible responses put the creator in
+    # result[0].contractCreator rather than a nested object.
+    if isinstance(d,dict):
+        result=d.get("result")
+        if isinstance(result,list) and result:
+            row=result[0] if isinstance(result[0],dict) else {}
+            found=(row.get("contractCreator") or row.get("creator") or
+                   row.get("creatorAddress") or row.get("deployer"))
+            if isinstance(found,str) and found.startswith("0x"):
+                return {"address":found,"label":"Creator / Deployer","source":"Blockscout"}
+
+    return None
 
 async def tron_creator(a):
     async with aiohttp.ClientSession() as s:

@@ -135,7 +135,7 @@ async def build_session(a,r):
         if len(matches)!=1:raise RuntimeError('This token is detected on multiple supported EVM chains. I need one unambiguous chain for holder data.')
         ch=matches[0];data=await asyncio.wait_for(evm_holders(a,ch),75)
         creator=await token_creator(family,a,r)
-        return {'family':'evm','address':a,'chain':ch,'symbol':ch.get('symbol') or r.get('symbol',''),'items':data['items'],'page':0,'total':data.get('total'),'source':data['source'],'cursor':data.get('next'),'cursor_history':[None], 'provider':data.get('provider'),'all_items':data.get('all_items'),'has_next':data.get('has_next',False),'supply_raw':r.get('total_supply_raw'),'supply_total':r.get('total_supply'),'creator':creator}
+        return {'family':'evm','address':a,'chain':ch,'symbol':ch.get('symbol') or r.get('symbol',''),'items':data['items'],'page':0,'total':data.get('total'),'source':data['source'],'cursor':data.get('next'),'cursor_history':[None], 'provider':data.get('provider'),'all_items':data.get('all_items'),'has_next':data.get('has_next',False),'supply_raw':ch.get('total_supply_raw'),'supply_total':ch.get('total_supply'),'creator':creator}
     if family=='solana':
         data=await asyncio.wait_for(solana_all_holders(a),150)
         creator=await token_creator(family,a,r)
