@@ -92,14 +92,29 @@ async def analyze_cmd(u,c):
 
 
 def holder_percent(s,x):
+    # Prefer a provider-supplied percentage when available. Otherwise calculate
+    # from raw supply, with a human-unit fallback for indexed EVM/TON/Sui data.
+    try:
+        supplied=x.get("percent")
+        if supplied is not None and str(supplied).strip() not in ("", "?"):
+            v=float(supplied)
+            if v>=0:return v
+    except Exception:
+        pass
     supply=s.get("supply_raw")
     try:
         raw=int(x.get("raw",0) or 0)
         sup=float(supply or 0)
-        if raw<=0 or sup<=0:return None
-        return (raw/sup)*100.0
+        if raw>0 and sup>0:return (raw/sup)*100.0
     except Exception:
-        return None
+        pass
+    try:
+        value=float(str(x.get("value",0)).replace(",",""))
+        total=float(s.get("supply_total",0) or 0)
+        if value>0 and total>0:return (value/total)*100.0
+    except Exception:
+        pass
+    return None
 
 
 def fmt_percent(v):
@@ -120,24 +135,24 @@ async def build_session(a,r):
         if len(matches)!=1:raise RuntimeError('This token is detected on multiple supported EVM chains. I need one unambiguous chain for holder data.')
         ch=matches[0];data=await asyncio.wait_for(evm_holders(a,ch),75)
         creator=await token_creator(family,a,r)
-        return {'family':'evm','address':a,'chain':ch,'symbol':ch.get('symbol') or r.get('symbol',''),'items':data['items'],'page':0,'total':data.get('total'),'source':data['source'],'cursor':data.get('next'),'cursor_history':[None], 'provider':data.get('provider'),'all_items':data.get('all_items'),'has_next':data.get('has_next',False),'supply_raw':r.get('total_supply_raw'),'creator':creator}
+        return {'family':'evm','address':a,'chain':ch,'symbol':ch.get('symbol') or r.get('symbol',''),'items':data['items'],'page':0,'total':data.get('total'),'source':data['source'],'cursor':data.get('next'),'cursor_history':[None], 'provider':data.get('provider'),'all_items':data.get('all_items'),'has_next':data.get('has_next',False),'supply_raw':r.get('total_supply_raw'),'supply_total':r.get('total_supply'),'creator':creator}
     if family=='solana':
         data=await asyncio.wait_for(solana_all_holders(a),150)
         creator=await token_creator(family,a,r)
-        return {'family':'solana','address':a,'chain':{'name':'Solana'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False,'supply_raw':r.get('total_supply_raw'),'creator':creator}
+        return {'family':'solana','address':a,'chain':{'name':'Solana'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False,'supply_raw':r.get('total_supply_raw'),'supply_total':r.get('total_supply'),'creator':creator}
     if family=='sui':
         data=await asyncio.wait_for(sui_holders(a),75)
         if data.get('needs_key'):raise RuntimeError('Sui holder indexing needs the BLOCKVISION_API_KEY already configured in Railway.')
         creator=await token_creator(family,a,r)
-        return {'family':'sui','address':a,'coin_type':data['coin_type'],'chain':{'name':'Sui'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False,'supply_raw':r.get('total_supply_raw'),'creator':creator}
+        return {'family':'sui','address':a,'coin_type':data['coin_type'],'chain':{'name':'Sui'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False,'supply_raw':r.get('total_supply_raw'),'supply_total':r.get('total_supply'),'creator':creator}
     if family=='tron':
         data=await asyncio.wait_for(tron_holders(a),45)
         creator=await token_creator(family,a,r)
-        return {'family':'tron','address':a,'chain':{'name':'TRON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':'TronScan','provider':'offset','offset':0,'has_next':data.get('has_next',False),'supply_raw':r.get('total_supply_raw'),'creator':creator}
+        return {'family':'tron','address':a,'chain':{'name':'TRON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':'TronScan','provider':'offset','offset':0,'has_next':data.get('has_next',False),'supply_raw':r.get('total_supply_raw'),'supply_total':r.get('total_supply'),'creator':creator}
     if family=='ton':
         data=await asyncio.wait_for(ton_all_holders(a),150)
         creator=await token_creator(family,a,r)
-        return {'family':'ton','address':a,'chain':{'name':'TON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False,'supply_raw':r.get('total_supply_raw'),'creator':creator}
+        return {'family':'ton','address':a,'chain':{'name':'TON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False,'supply_raw':r.get('total_supply_raw'),'supply_total':r.get('total_supply'),'creator':creator}
     raise RuntimeError('Holder intelligence is not available for this address type.')
 
 
@@ -227,7 +242,7 @@ async def holder_previous(s):
 async def refresh_session(s):
     a=s['address'];r=await asyncio.wait_for(analyze_address(a),90);new=await build_session(a,r)
     keep={'family':new['family'],'address':new['address'],'chain':new['chain'],'symbol':new.get('symbol',''),'items':new['items'],'page':0,'total':new.get('total'),'source':new['source'],'provider':new.get('provider')}
-    for k in ('cursor','cursor_history','offset','has_next','coin_type','all_items','supply_raw','creator'):keep[k]=new.get(k)
+    for k in ('cursor','cursor_history','offset','has_next','coin_type','all_items','supply_raw','supply_total','creator'):keep[k]=new.get(k)
     keep['created']=__import__('time').time();s.clear();s.update(keep)
 
 

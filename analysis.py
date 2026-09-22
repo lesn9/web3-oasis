@@ -137,9 +137,22 @@ async def evm_token(a,c):
 async def blockscout_request(chain_id,path,params=None):
     key=os.getenv("BLOCKSCOUT_API_KEY","").strip()
     if not key:return None
-    url=f"https://api.blockscout.com/{chain_id}/api/v2{path}"
+    # Robinhood Chain has its own official Blockscout instance.  Keep the
+    # unified API for the other EVM chains, but route 4663 directly to the
+    # chain explorer so holder/creator indexing remains available there.
+    if int(chain_id)==4663:
+        url=f"https://robinhoodchain.blockscout.com/api/v2{path}"
+    else:
+        url=f"https://api.blockscout.com/{chain_id}/api/v2{path}"
     p=dict(params or {});p["apikey"]=key
-    async with aiohttp.ClientSession() as s:return await http_json(s,"GET",url,params=p)
+    async with aiohttp.ClientSession() as s:
+        d=await http_json(s,"GET",url,params=p)
+        # The official Robinhood instance can transiently rate-limit.  Retry
+        # once through the unified Blockscout API before giving up.
+        if (isinstance(d,dict) and d.get("__http_error__") and int(chain_id)==4663):
+            fallback=f"https://api.blockscout.com/4663/api/v2{path}"
+            return await http_json(s,"GET",fallback,params=p)
+        return d
 
 
 def parse_next_cursor(d):
@@ -539,8 +552,26 @@ async def sui_resolve_coin_type(a):
     raise RuntimeError("I could not derive a Sui coin type from that object. Send the full coin type.")
 
 async def sui_token(a):
-    coin_type=await sui_resolve_coin_type(a);md=await sui_rpc("suix_getCoinMetadata",[coin_type]);sup=await sui_rpc("suix_getTotalSupply",[coin_type])
-    if md is None:raise RuntimeError("Sui RPC could not find coin metadata for that coin type.")
+    coin_type=await sui_resolve_coin_type(a)
+    # Prefer BlockVision for token metadata/supply when its configured key can
+    # resolve the coin. This avoids false negatives from the public Sui RPC
+    # for indexed coins whose metadata object is not available there.
+    key=os.getenv("BLOCKVISION_API_KEY","").strip()
+    if key:
+        try:
+            async with aiohttp.ClientSession() as s:
+                d=await http_json(s,"GET","https://api.blockvision.org/v2/sui/coin/detail",params={"coinType":coin_type},headers={"x-api-key":key})
+            if isinstance(d,dict) and not d.get("__http_error__"):
+                data=d.get("data") or d
+                if isinstance(data,dict) and (data.get("symbol") or data.get("name") or data.get("totalSupply") is not None):
+                    dec=int(data.get("decimals",0) or 0)
+                    raw=int(float(data.get("totalSupply",0) or 0)) if dec==0 else int(float(data.get("totalSupply",0) or 0)*(10**dec))
+                    return {"family":"sui","chain":"Sui","contract":coin_type,"input":a,"name":data.get("name") or "Unknown Sui Coin","symbol":data.get("symbol") or "???","decimals":dec,"total_supply":float(data.get("totalSupply",0) or 0),"total_supply_raw":raw,"coin_type":coin_type}
+        except Exception:
+            pass
+    md=await sui_rpc("suix_getCoinMetadata",[coin_type]);sup=await sui_rpc("suix_getTotalSupply",[coin_type])
+    if md is None:
+        raise RuntimeError("Sui coin metadata was not available from the configured Sui providers for that coin type.")
     d=int((md or {}).get("decimals",0));raw=int(((sup or {}).get("value",0) or 0))
     return {"family":"sui","chain":"Sui","contract":coin_type,"input":a,"name":md.get("name") or"Unknown Sui Coin","symbol":md.get("symbol") or"???","decimals":d,"total_supply":raw/(10**d if d else 1),"total_supply_raw":raw,"coin_type":coin_type}
 
@@ -569,11 +600,27 @@ async def tron_token(a):
     return {"family":"tron","chain":"TRON","contract":a,"name":x.get("name") or"TRC-20 Token","symbol":x.get("symbol") or"???","decimals":x.get("decimals"),"total_supply":x.get("total_supply"),"total_supply_raw":x.get("total_supply"),"holder_count":x.get("holders") or x.get("holder_count")}
 
 async def tron_holder_page(a,offset):
-    async with aiohttp.ClientSession() as s:d=await http_json(s,"GET","https://apilist.tronscanapi.com/api/tokenholders",params={"address":a,"start":offset,"limit":10,"sort":"-balance"})
-    if not isinstance(d,dict) or d.get("__http_error__"):raise RuntimeError("TronScan holder index did not accept the public request. No extra API key is configured.")
-    rows=d.get("data") or [];total=d.get("rangeTotal") or d.get("total") or 0
-    items=[{"address":x.get("address"),"value":x.get("balance") or x.get("quantity") or x.get("amount") or "0","percent":x.get("percent") or x.get("tokenRatio")} for x in rows if x.get("address")]
-    return {"items":items,"total":total,"has_next":offset+len(items)<total}
+    key=(os.getenv("TRONSCAN_API_KEY","") or os.getenv("TRON_PRO_API_KEY","")).strip()
+    headers={"TRON-PRO-API-KEY":key} if key else {}
+    params={"address":a,"start":offset,"limit":10,"sort":"-balance"}
+    async with aiohttp.ClientSession() as s:
+        last=None
+        for attempt in range(3):
+            d=await http_json(s,"GET","https://apilist.tronscanapi.com/api/tokenholders",params=params,headers=headers)
+            if isinstance(d,dict) and not d.get("__http_error__"):
+                rows=d.get("data") or []
+                total=d.get("rangeTotal") or d.get("total") or 0
+                items=[]
+                for x in rows:
+                    addr=x.get("address")
+                    if not addr:continue
+                    items.append({"address":addr,"value":x.get("balance") or x.get("quantity") or x.get("amount") or "0","percent":x.get("percent") or x.get("tokenRatio") or x.get("trxRatio")})
+                return {"items":items,"total":total,"has_next":offset+len(items)<total}
+            last=d
+            if isinstance(d,dict) and d.get("__http_error__") in (429,500,502,503,504) and attempt<2:
+                await asyncio.sleep(0.75*(attempt+1));continue
+            break
+    raise RuntimeError("TronScan holder index is currently unavailable. If TronScan requires an API key for this request, set TRONSCAN_API_KEY in Railway.")
 
 async def tron_holders(a):
     return await tron_holder_page(a,0)
@@ -592,13 +639,18 @@ async def ton_all_holders(a):
             params={"limit":50,"sort_by":"address"}
             if last:params["last_account_id"]=last
             d=await http_json(s,"GET",f"https://tonapi.io/v2/jettons/{a}/holders",params=params)
-            if not isinstance(d,dict) or d.get("__http_error__"):raise RuntimeError("TONAPI holder lookup failed.")
-            rows=d.get("addresses") or d.get("holders") or []
+            if not isinstance(d,dict) or d.get("__http_error__"):
+                raise RuntimeError("TONAPI holder lookup failed. The TONAPI holder endpoint did not return a valid page.")
+            rows=d.get("addresses") or d.get("holders") or d.get("data") or []
+            if not isinstance(rows,list):rows=[]
             for x in rows:
                 addr=x.get("address") if isinstance(x,dict) else None
-                if addr:items.append({"address":addr,"value":x.get("balance") or x.get("amount") or "0","percent":x.get("percentage")})
+                if addr:
+                    items.append({"address":addr,"value":x.get("balance") or x.get("amount") or x.get("quantity") or "0","percent":x.get("percentage") or x.get("percent")})
             if not rows or len(rows)<50:break
-            last=rows[-1].get("address")
+            nxt=rows[-1].get("address") if isinstance(rows[-1],dict) else None
+            if not nxt or nxt==last:break
+            last=nxt
             if len(items)>=100000:raise RuntimeError("TON holder safety limit reached at 100,000 holders.")
     return {"items":items,"total":len(items),"source":"TONAPI","page_size":10}
 
