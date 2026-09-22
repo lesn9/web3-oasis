@@ -357,7 +357,7 @@ async def solana_all_holders(a):
             data=acct.get("data") or {}
             parsed=data.get("parsed") or {}
             info=parsed.get("info") or {}
-            owner=owner or acct.get("owner") or info.get("owner")
+            owner=owner or info.get("owner") or acct.get("owner")
             if amount is None: amount=(info.get("tokenAmount") or {}).get("amount")
             if amount is None and isinstance(x.get("tokenAmount"),dict): amount=x["tokenAmount"].get("amount")
             try: raw=int(amount or 0)
@@ -428,7 +428,7 @@ async def solana_all_holders(a):
     return {"items":items,"total":len(items),"source":"Solana token accounts (unique wallet owners)","token_accounts":token_accounts,"page_size":10}
 
 
-async def evm_market_data(slug,a,search_terms=None):
+async def evm_market_data(slug,a):
     """Return DexScreener pairs for an EVM token.
 
     IMPORTANT: this function is isolated from all holder logic.  The Robinhood
@@ -474,25 +474,21 @@ async def evm_market_data(slug,a,search_terms=None):
             # Last-resort address search.  This is intentionally after the
             # exact token endpoints so a search result can never bypass the
             # exact chain/address validation below.
-            queries=[address]
-            if search_terms:
-                queries.extend(str(x).strip() for x in search_terms if str(x).strip())
-            for query in queries:
-                for attempt in range(3):
-                    data=await http_json(
-                        session,
-                        "GET",
-                        "https://api.dexscreener.com/latest/dex/search",
-                        params={"q":query},
-                    )
-                    if isinstance(data,dict) and isinstance(data.get("pairs"),list):
-                        candidates.extend(data["pairs"])
-                        break
-                    status=data.get("__http_error__") if isinstance(data,dict) else None
-                    if status in (429,500,502,503,504) and attempt < 2:
-                        await asyncio.sleep(0.75*(attempt+1))
-                        continue
+            for attempt in range(3):
+                data=await http_json(
+                    session,
+                    "GET",
+                    "https://api.dexscreener.com/latest/dex/search",
+                    params={"q":address},
+                )
+                if isinstance(data,dict) and isinstance(data.get("pairs"),list):
+                    candidates.extend(data["pairs"])
                     break
+                status=data.get("__http_error__") if isinstance(data,dict) else None
+                if status in (429,500,502,503,504) and attempt < 2:
+                    await asyncio.sleep(0.75*(attempt+1))
+                    continue
+                break
     except Exception:
         return []
 
