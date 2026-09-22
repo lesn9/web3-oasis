@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from analysis import (
     analyze_address, evm_holders, evm_holder_next, solana_all_holders,
     sui_holders, tron_holders, tron_holder_page, ton_all_holders,
-    wallet_details, market_data, evm_market_data, fmt_number, short_address, solana_token_account_page
+    wallet_details, market_data, evm_market_data, fmt_number, short_address, solana_token_account_page, token_creator
 )
 
 SESSIONS = {}
@@ -45,7 +45,7 @@ async def analyze_cmd(u,c):
                 t=(f"🤖 <b>Web3 Oasis — Token Analysis</b>\n\n🪙 <b>{html.escape(x['name'])}</b> ({html.escape(x['symbol'])})\n"
                    f"⛓️ Chain: <b>{html.escape(x['chain'])}</b>\n🆔 Chain ID: {x['chain_id']}\n📜 Contract: <code>{html.escape(a)}</code>\n"
                    f"🔢 Decimals: {x['decimals']}\n💰 Total Supply: {fmt_number(x['total_supply'])} {html.escape(x['symbol'])}\n")
-                markets=await evm_market_data(x['slug'],a,[x.get('symbol'),x.get('name')])
+                markets=await evm_market_data(x['slug'],a)
                 if markets:
                     p=markets[0];liq=(p.get('liquidity') or {}).get('usd')
                     t+=(f"\n📊 <b>Market Data</b>\n• Pair: {html.escape((p.get('baseToken') or {}).get('symbol','?'))}/{html.escape((p.get('quoteToken') or {}).get('symbol','?'))}\n"
@@ -91,28 +91,53 @@ async def analyze_cmd(u,c):
         await m.edit_text(f'❌ Analysis failed:\n<code>{html.escape(str(e)[:1200])}</code>',parse_mode='HTML')
 
 
-async def build_session(a,r,selected_chain=None):
+def holder_percent(s,x):
+    supply=s.get("supply_raw")
+    try:
+        raw=int(x.get("raw",0) or 0)
+        sup=float(supply or 0)
+        if raw<=0 or sup<=0:return None
+        return (raw/sup)*100.0
+    except Exception:
+        return None
+
+
+def fmt_percent(v):
+    try:
+        x=float(v)
+        if x>=1:return f"{x:.2f}%"
+        if x>=0.01:return f"{x:.4f}%"
+        if x>=0.0001:return f"{x:.6f}%"
+        return f"{x:.8f}%"
+    except Exception:return "?"
+
+
+async def build_session(a,r):
     family=r.get('family')
+    creator=None
     if family=='evm':
         matches=r.get('matches',[])
-        if selected_chain is not None: ch=selected_chain
-        elif len(matches)==1: ch=matches[0]
-        else: raise RuntimeError('This token is detected on multiple supported EVM chains. Select a chain first.')
-        data=await asyncio.wait_for(evm_holders(a,ch),75)
-        return {'family':'evm','address':a,'chain':ch,'symbol':ch.get('symbol') or r.get('symbol',''),'items':data['items'],'page':0,'total':data.get('total'),'source':data['source'],'cursor':data.get('next'),'cursor_history':[None], 'provider':data.get('provider'),'all_items':data.get('all_items'),'has_next':data.get('has_next',False)}
+        if len(matches)!=1:raise RuntimeError('This token is detected on multiple supported EVM chains. I need one unambiguous chain for holder data.')
+        ch=matches[0];data=await asyncio.wait_for(evm_holders(a,ch),75)
+        creator=await token_creator(family,a,r)
+        return {'family':'evm','address':a,'chain':ch,'symbol':ch.get('symbol') or r.get('symbol',''),'items':data['items'],'page':0,'total':data.get('total'),'source':data['source'],'cursor':data.get('next'),'cursor_history':[None], 'provider':data.get('provider'),'all_items':data.get('all_items'),'has_next':data.get('has_next',False),'supply_raw':r.get('total_supply_raw'),'creator':creator}
     if family=='solana':
         data=await asyncio.wait_for(solana_all_holders(a),150)
-        return {'family':'solana','address':a,'chain':{'name':'Solana'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False}
+        creator=await token_creator(family,a,r)
+        return {'family':'solana','address':a,'chain':{'name':'Solana'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False,'supply_raw':r.get('total_supply_raw'),'creator':creator}
     if family=='sui':
         data=await asyncio.wait_for(sui_holders(a),75)
         if data.get('needs_key'):raise RuntimeError('Sui holder indexing needs the BLOCKVISION_API_KEY already configured in Railway.')
-        return {'family':'sui','address':a,'coin_type':data['coin_type'],'chain':{'name':'Sui'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False}
+        creator=await token_creator(family,a,r)
+        return {'family':'sui','address':a,'coin_type':data['coin_type'],'chain':{'name':'Sui'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False,'supply_raw':r.get('total_supply_raw'),'creator':creator}
     if family=='tron':
         data=await asyncio.wait_for(tron_holders(a),45)
-        return {'family':'tron','address':a,'chain':{'name':'TRON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':'TronScan','provider':'offset','offset':0,'has_next':data.get('has_next',False)}
+        creator=await token_creator(family,a,r)
+        return {'family':'tron','address':a,'chain':{'name':'TRON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':'TronScan','provider':'offset','offset':0,'has_next':data.get('has_next',False),'supply_raw':r.get('total_supply_raw'),'creator':creator}
     if family=='ton':
         data=await asyncio.wait_for(ton_all_holders(a),150)
-        return {'family':'ton','address':a,'chain':{'name':'TON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False}
+        creator=await token_creator(family,a,r)
+        return {'family':'ton','address':a,'chain':{'name':'TON'},'symbol':r.get('symbol',''),'items':data['items'],'page':0,'total':data['total'],'source':data['source'],'provider':'local','has_next':False,'supply_raw':r.get('total_supply_raw'),'creator':creator}
     raise RuntimeError('Holder intelligence is not available for this address type.')
 
 
@@ -132,8 +157,13 @@ def holder_title(s):
 def holder_text(s):
     rows,start,end=page_rows(s);total=s.get('total')
     t=("👥 <b>Web3 Oasis — Holder Intelligence</b>\n\n"
-       f"🪙 <b>{html.escape(holder_title(s))}</b>\n⛓️ {html.escape(s['chain']['name'])}\n📜 <code>{html.escape(s['address'])}</code>\n"
-       f"👥 <b>Total Holders: {total if total is not None else 'not supplied'}</b>\n"
+       f"🪙 <b>{html.escape(holder_title(s))}</b>\n⛓️ {html.escape(s['chain']['name'])}\n📜 <code>{html.escape(s['address'])}</code>\n")
+    cr=s.get('creator') or {}
+    if cr.get('address'):
+        t+=f"👤 <b>{html.escape(str(cr.get('label') or 'Creator / Deployer'))}</b>: <code>{html.escape(str(cr['address']))}</code>\n"
+    else:
+        t+="👤 <b>Creator / Deployer</b>: Not indexed\n"
+    t+=(f"👥 <b>Total Holders: {total if total is not None else 'not supplied'}</b>\n"
        f"📄 <b>Showing {start+1}–{end}</b>\n"
        f"ℹ️ Source: {html.escape(s['source'])}")
     return t,rows,start
@@ -144,7 +174,9 @@ async def render(target,sid):
     if not s:return
     t,rows,start=holder_text(s);kb=[]
     for pos,x in enumerate(rows,start):
-        kb.append([InlineKeyboardButton(short_address(x['address'],10,6),callback_data=f"hd:{sid}:{pos}")])
+        pct=holder_percent(s,x)
+        label=f"{short_address(x['address'],10,6)} — {fmt_percent(pct) if pct is not None else '?'}"
+        kb.append([InlineKeyboardButton(label,callback_data=f"hd:{sid}:{pos}")])
     nav=[]
     if s['page']>0:nav.append(InlineKeyboardButton('⬅️ Previous',callback_data=f"hp:{sid}"))
     has_next=(s['page']+1)*PAGE_SIZE<len(s['items']) or (s.get('provider')=='offset' and s.get('has_next',False)) or (s.get('provider')=='cmc' and (s['page']+1)*PAGE_SIZE<len(s.get('all_items',[])))
@@ -162,17 +194,12 @@ async def holders_cmd(u,c):
     m=await u.message.reply_text('🔎 Detecting chain…')
     try:
         r=await asyncio.wait_for(analyze_address(a),90)
-        matches=r.get('matches',[]) if r.get('family')=='evm' else []
-        if len(matches)>1:
-            sid=uuid.uuid4().hex[:10]
-            SESSIONS[sid]={'kind':'chain_select','created':__import__('time').time(),'address':a,'matches':matches}
-            kb=[[InlineKeyboardButton(f"{ch['name']} (Chain {ch['chain_id']})",callback_data=f"hc:{sid}:{i}")] for i,ch in enumerate(matches)]
-            return await m.edit_text('👥 <b>Holder Intelligence</b>\n\nThis token exists on multiple supported EVM chains.\nSelect the chain you want to inspect:',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(kb))
         await m.edit_text('⏳ Building the holder index…')
         s=await build_session(a,r);sid=uuid.uuid4().hex[:10];s['created']=__import__('time').time();SESSIONS[sid]=s
         await m.delete();await render(u,sid)
     except Exception as e:
         await m.edit_text(f'❌ Holder lookup failed:\n<code>{html.escape(str(e)[:1200])}</code>',parse_mode='HTML')
+
 
 async def holder_next(s):
     if s['provider']=='cmc':
@@ -198,26 +225,15 @@ async def holder_previous(s):
 
 
 async def refresh_session(s):
-    a=s['address'];r=await asyncio.wait_for(analyze_address(a),90);selected=s.get('chain') if s.get('family')=='evm' else None;new=await build_session(a,r,selected_chain=selected)
+    a=s['address'];r=await asyncio.wait_for(analyze_address(a),90);new=await build_session(a,r)
     keep={'family':new['family'],'address':new['address'],'chain':new['chain'],'symbol':new.get('symbol',''),'items':new['items'],'page':0,'total':new.get('total'),'source':new['source'],'provider':new.get('provider')}
-    for k in ('cursor','cursor_history','offset','has_next','coin_type','all_items'):keep[k]=new.get(k)
+    for k in ('cursor','cursor_history','offset','has_next','coin_type','all_items','supply_raw','creator'):keep[k]=new.get(k)
     keep['created']=__import__('time').time();s.clear();s.update(keep)
 
 
 async def cb(u,c):
     q=u.callback_query;await q.answer();parts=q.data.split(':');action,sid=parts[0],parts[1];s=SESSIONS.get(sid)
     if not s:return await q.edit_message_text('Session expired. Run /holders again.')
-    if action=='hc':
-        try:i=int(parts[2]);ch=s.get('matches',[])[i]
-        except Exception:return await q.edit_message_text('Invalid chain selection. Run /holders again.')
-        try:
-            await q.edit_message_text('⏳ Building the holder index…')
-            new=await build_session(s['address'],{'family':'evm','matches':s['matches']},selected_chain=ch)
-            new['created']=__import__('time').time();SESSIONS[sid]=new
-            await render(q,sid)
-        except Exception as e:
-            await q.edit_message_text(f'❌ Holder lookup failed:\n<code>{html.escape(str(e)[:1200])}</code>',parse_mode='HTML')
-        return
     if action=='hd':
         i=int(parts[2]);rows,_,_=page_rows(s)
         if i>=len(s['items']):return
@@ -230,13 +246,17 @@ async def cb(u,c):
             except Exception as e: details['token_accounts_error']=str(e)
         t=(f"📋 <b>Holder Details</b>\n\n📍 Wallet Address\n<code>{html.escape(addr)}</code>\n\n"
            f"💰 Token Balance: <code>{html.escape(str(x.get('value','0')))}</code>\n")
+        cr=s.get('creator') or {}
+        if cr.get('address'):
+            t+=f"\n👤 <b>{html.escape(str(cr.get('label') or 'Creator / Deployer'))}</b>\n<code>{html.escape(str(cr['address']))}</code>\n"
         if s['family']=='solana':
             t+=f"\n🪙 <b>Token Accounts: {len(token_accounts)}</b>\n"
             for ta in token_accounts:
                 t+=f"• <code>{html.escape(str(ta.get('address','')))}</code> — {html.escape(str(ta.get('value','0')))}\n"
             if not token_accounts and details.get('token_accounts_error'):
                 t+=f"ℹ️ Token-account details unavailable: <code>{html.escape(str(details['token_accounts_error'])[:400])}</code>\n"
-        if x.get('percent') is not None:t+=f"📊 Supply Share: <code>{html.escape(str(x['percent']))}%</code>\n"
+        pct=holder_percent(s,x)
+        if pct is not None:t+=f"📊 Supply Share: <code>{fmt_percent(pct)}</code>\n"
         if details.get('type'):t+=f"🏷️ Account Type: <b>{html.escape(str(details['type']))}</b>\n"
         if details.get('chain'):t+=f"⛓️ Chain: {html.escape(str(details['chain']))}\n"
         if details.get('native') is not None:t+=f"⛽ Native Balance: <code>{details['native']:.8f}</code>\n"
@@ -281,7 +301,7 @@ def main():
     if not token:raise RuntimeError('TELEGRAM_BOT_TOKEN is not configured.')
     app=Application.builder().token(token).build()
     app.add_handler(CommandHandler('start',start));app.add_handler(CommandHandler('analyze',analyze_cmd));app.add_handler(CommandHandler('holders',holders_cmd));app.add_handler(CommandHandler('risk',risk));app.add_handler(CommandHandler('report',report))
-    app.add_handler(CallbackQueryHandler(cb,pattern=r'^(hc|hd|wa|hb|hn|hp|hr):'))
+    app.add_handler(CallbackQueryHandler(cb,pattern=r'^(hd|wa|hb|hn|hp|hr):'))
     app.run_polling(drop_pending_updates=True)
 
 if __name__=='__main__':main()

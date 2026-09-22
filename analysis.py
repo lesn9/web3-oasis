@@ -129,7 +129,7 @@ async def evm_token(a,c):
             async with aiohttp.ClientSession() as s:
                 vals=await asyncio.gather(*(rpc(s,u,"eth_call",[{"to":a,"data":sel},"latest"]) for sel in SELECTORS.values()))
             name,sym,dec,sup=vals;d=dec_uint(dec);supply=dec_uint(sup)/(10**d if d<78 else 1)
-            return {"family":"evm","chain":c["name"],"chain_id":c["chain_id"],"slug":c["slug"],"contract":a,"name":dec_string(name) or"Unknown Token","symbol":dec_string(sym) or"???","decimals":d,"total_supply":supply}
+            return {"family":"evm","chain":c["name"],"chain_id":c["chain_id"],"slug":c["slug"],"contract":a,"name":dec_string(name) or"Unknown Token","symbol":dec_string(sym) or"???","decimals":d,"total_supply":supply,"total_supply_raw":dec_uint(sup)}
         except Exception as e:last=str(e)
     raise RuntimeError(last)
 
@@ -305,7 +305,7 @@ async def solana_token(a):
                 return {
                     "family":"solana","chain":"Solana","contract":a,
                     "name":name or "SPL Token","symbol":symbol or "???",
-                    "decimals":d,"total_supply":raw/(10**d if d else 1)
+                    "decimals":d,"total_supply":raw/(10**d if d else 1),"total_supply_raw":raw
                 }
         except Exception as e:
             last=str(e)
@@ -319,10 +319,11 @@ async def solana_token_account_page(owner,mint):
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s:
                 d=await solana_rpc_call(s,u,"getTokenAccountsByOwner",[owner,{"mint":mint},{"encoding":"jsonParsed"}])
-            if not isinstance(d,list):
+            rows=d.get("value") if isinstance(d,dict) else d
+            if not isinstance(rows,list):
                 continue
             out=[]
-            for x in d:
+            for x in rows:
                 info=((((x.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {})
                 ta=info.get("tokenAmount") or {}
                 try: raw=int(ta.get("amount") or 0)
@@ -541,7 +542,7 @@ async def sui_token(a):
     coin_type=await sui_resolve_coin_type(a);md=await sui_rpc("suix_getCoinMetadata",[coin_type]);sup=await sui_rpc("suix_getTotalSupply",[coin_type])
     if md is None:raise RuntimeError("Sui RPC could not find coin metadata for that coin type.")
     d=int((md or {}).get("decimals",0));raw=int(((sup or {}).get("value",0) or 0))
-    return {"family":"sui","chain":"Sui","contract":coin_type,"input":a,"name":md.get("name") or"Unknown Sui Coin","symbol":md.get("symbol") or"???","decimals":d,"total_supply":raw/(10**d if d else 1),"coin_type":coin_type}
+    return {"family":"sui","chain":"Sui","contract":coin_type,"input":a,"name":md.get("name") or"Unknown Sui Coin","symbol":md.get("symbol") or"???","decimals":d,"total_supply":raw/(10**d if d else 1),"total_supply_raw":raw,"coin_type":coin_type}
 
 async def sui_holders(a):
     coin_type=await sui_resolve_coin_type(a);key=os.getenv("BLOCKVISION_API_KEY","").strip()
@@ -565,7 +566,7 @@ async def sui_holders(a):
 async def tron_token(a):
     async with aiohttp.ClientSession() as s:d=await http_json(s,"GET","https://api.trongrid.io/v1/trc20/info",params={"contract_list":a})
     x=(d.get("data") or [{}])[0] if isinstance(d,dict) else {}
-    return {"family":"tron","chain":"TRON","contract":a,"name":x.get("name") or"TRC-20 Token","symbol":x.get("symbol") or"???","decimals":x.get("decimals"),"total_supply":x.get("total_supply"),"holder_count":x.get("holders") or x.get("holder_count")}
+    return {"family":"tron","chain":"TRON","contract":a,"name":x.get("name") or"TRC-20 Token","symbol":x.get("symbol") or"???","decimals":x.get("decimals"),"total_supply":x.get("total_supply"),"total_supply_raw":x.get("total_supply"),"holder_count":x.get("holders") or x.get("holder_count")}
 
 async def tron_holder_page(a,offset):
     async with aiohttp.ClientSession() as s:d=await http_json(s,"GET","https://apilist.tronscanapi.com/api/tokenholders",params={"address":a,"start":offset,"limit":10,"sort":"-balance"})
@@ -582,7 +583,7 @@ async def ton_token(a):
     async with aiohttp.ClientSession() as s:d=await http_json(s,"GET",f"https://tonapi.io/v2/jettons/{a}")
     if not isinstance(d,dict) or d.get("__http_error__"):raise RuntimeError("TONAPI could not find that Jetton.")
     md=d.get("metadata") or {}
-    return {"family":"ton","chain":"TON","contract":a,"name":md.get("name") or d.get("name") or"Jetton","symbol":md.get("symbol") or d.get("symbol") or"???","decimals":d.get("decimals"),"total_supply":d.get("total_supply") or d.get("totalSupply")}
+    return {"family":"ton","chain":"TON","contract":a,"name":md.get("name") or d.get("name") or"Jetton","symbol":md.get("symbol") or d.get("symbol") or"???","decimals":d.get("decimals"),"total_supply":d.get("total_supply") or d.get("totalSupply"),"total_supply_raw":d.get("total_supply") or d.get("totalSupply")}
 
 async def ton_all_holders(a):
     items=[];last=None
@@ -600,6 +601,106 @@ async def ton_all_holders(a):
             last=rows[-1].get("address")
             if len(items)>=100000:raise RuntimeError("TON holder safety limit reached at 100,000 holders.")
     return {"items":items,"total":len(items),"source":"TONAPI","page_size":10}
+
+
+async def _first_signer_from_transaction(s, url, signature):
+    tx=await solana_rpc_call(s,url,"getTransaction",[signature,{"encoding":"jsonParsed","maxSupportedTransactionVersion":0}])
+    if not isinstance(tx,dict): return None
+    msg=((tx.get("transaction") or {}).get("message") or {})
+    keys=msg.get("accountKeys") or []
+    for k in keys:
+        if isinstance(k,dict) and k.get("signer"):
+            return k.get("pubkey") or k.get("address")
+    return None
+
+async def solana_creator(mint):
+    # The earliest transaction involving the mint is used as the creation/deployment
+    # attribution. The first signer is reported as "Creator / Deployer"; this is
+    # deliberately labeled as attribution rather than pretending it proves a human identity.
+    for u in solana_rpc_urls():
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35)) as s:
+                before=None; oldest=None
+                for _ in range(50):
+                    params={"limit":1000}
+                    if before: params["before"]=before
+                    rows=await solana_rpc_call(s,u,"getSignaturesForAddress",[mint,params])
+                    if not isinstance(rows,list) or not rows: break
+                    oldest=rows[-1].get("signature") or oldest
+                    if len(rows)<1000: break
+                    before=rows[-1].get("signature")
+                    if not before: break
+                if oldest:
+                    signer=await _first_signer_from_transaction(s,u,oldest)
+                    if signer:return {"address":signer,"label":"Creator / Deployer","source":"earliest mint transaction signer"}
+        except Exception:
+            continue
+    return None
+
+async def evm_creator(a,c):
+    # Blockscout instances expose creator/deployer fields inconsistently, so accept
+    # several documented/commonly indexed field names without guessing when absent.
+    if not os.getenv("BLOCKSCOUT_API_KEY","").strip(): return None
+    d=await blockscout_request(c["chain_id"],f"/tokens/{a}")
+    if not isinstance(d,dict) or d.get("__http_error__"):
+        d=await blockscout_request(c["chain_id"],f"/addresses/{a}")
+    def find(obj):
+        if isinstance(obj,dict):
+            for k in ("creator_address_hash","creatorAddressHash","creator_address","creatorAddress","deployer","deployer_address","deployerAddress"):
+                v=obj.get(k)
+                if isinstance(v,str) and v.startswith("0x"): return v
+            for k,v in obj.items():
+                if k in ("creator","contract_creator"):
+                    if isinstance(v,str) and v.startswith("0x"): return v
+                    z=find(v)
+                    if z:return z
+        return None
+    found=find(d)
+    return {"address":found,"label":"Creator / Deployer","source":"Blockscout"} if found else None
+
+async def tron_creator(a):
+    async with aiohttp.ClientSession() as s:
+        d=await http_json(s,"GET","https://apilist.tronscanapi.com/api/contract",params={"contract":a})
+    rows=(d.get("data") or []) if isinstance(d,dict) else []
+    x=rows[0] if rows else {}
+    cr=x.get("creator") or {}
+    addr=cr.get("address") if isinstance(cr,dict) else cr
+    if not addr: addr=x.get("creatorAddress") or x.get("ownerAddress") or x.get("owner_address")
+    return {"address":addr,"label":"Creator / Deployer","source":"TronScan"} if addr else None
+
+async def sui_creator(coin_type):
+    key=os.getenv("BLOCKVISION_API_KEY","").strip()
+    if not key:return None
+    async with aiohttp.ClientSession() as s:
+        d=await http_json(s,"GET","https://api.blockvision.org/v2/sui/coin/detail",params={"coinType":coin_type},headers={"x-api-key":key})
+    if not isinstance(d,dict):return None
+    data=d.get("data") or d
+    addr=data.get("creator") or data.get("creatorAddress")
+    return {"address":addr,"label":"Creator","source":"BlockVision"} if addr else None
+
+async def ton_creator(a):
+    # TonAPI jetton metadata does not guarantee a creator field. If an admin/owner
+    # is explicitly indexed, expose it as authority rather than mislabeling it creator.
+    async with aiohttp.ClientSession() as s:
+        d=await http_json(s,"GET",f"https://tonapi.io/v2/jettons/{a}")
+    if not isinstance(d,dict):return None
+    for k in ("admin","admin_address","adminAddress","owner","owner_address"):
+        v=d.get(k)
+        if isinstance(v,str) and v:return {"address":v,"label":"Jetton Admin / Owner","source":"TonAPI"}
+    return None
+
+async def token_creator(family,a,r):
+    try:
+        if family=="evm":
+            matches=r.get("matches") or []
+            if len(matches)==1:return await evm_creator(a,matches[0])
+        if family=="solana":return await solana_creator(a)
+        if family=="sui":return await sui_creator(r.get("coin_type") or a)
+        if family=="tron":return await tron_creator(a)
+        if family=="ton":return await ton_creator(a)
+    except Exception:
+        return None
+    return None
 
 
 async def analyze_address(a):
